@@ -567,9 +567,10 @@ class StickyPanel(commands.Cog):
             inline=False
         )
         embed.add_field(
-            name="🗑️ Removals (Interactive Dropdowns)",
+            name="🗑️ Removals & Clearances",
             value=(
                 "• `-stickypanel removebutton` - Select an existing button to delete.\n"
+                "• `-stickypanel clearbuttons` - Wipe all custom action buttons instantly.\n"
                 "• `-stickypanel removecategory` - Select an existing category to delete.\n"
                 "• `-stickypanel clearcategories` - Wipe all configured categories instantly."
             ),
@@ -613,6 +614,13 @@ class StickyPanel(commands.Cog):
             return await ctx.send("❌ There are no custom buttons configured to remove.")
         view = RemoveButtonView(self, ctx)
         await ctx.send("Select the button you want to remove from the dropdown below:", view=view, ephemeral=True)
+
+    @stickypanel_cmd.command(name="clearbuttons")
+    @commands.has_permissions(administrator=True)
+    async def clear_buttons(self, ctx):
+        self.config["buttons"] = []
+        save_config(self.config)
+        await ctx.send("✅ Cleared all custom panel action buttons.")
 
     @stickypanel_cmd.command(name="addcategory")
     @commands.has_permissions(administrator=True)
