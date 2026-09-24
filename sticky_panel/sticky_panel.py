@@ -2,64 +2,80 @@ import asyncio
 import discord
 from discord.ext import commands
 
-class StickyPanelView(discord.ui.View):
+class ConfirmCloseView(discord.ui.View):
     def __init__(self, bot):
-        super().__init__(timeout=None)
+        super().__init__(timeout=60)
         self.bot = bot
 
-    @discord.ui.button(label="Claim Thread", style=discord.ButtonStyle.success, custom_id="sticky_claim", emoji="🔒")
-    async def claim_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        thread = self.bot.threads.find(channel=interaction.channel)
-        if not thread:
-            return await interaction.response.send_message("This is not an active Modmail thread.", ephemeral=True)
-
+    @discord.ui.button(label="Yes, Close Thread", style=discord.ButtonStyle.danger, custom_id="confirm_close_yes")
+    async def confirm_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.defer()
-
-        # Build a synthetic context with your prefix '-' to run native claim command
-        message = interaction.message
-        message.content = "-claim"
-        message.author = interaction.user
         
-        ctx = await self.bot.get_context(message)
-        if ctx.command:
-            await self.bot.invoke(ctx)
-        else:
-            await interaction.followup.send("Failed to execute claim command.", ephemeral=True)
-
-    @discord.ui.button(label="Close Thread", style=discord.ButtonStyle.danger, custom_id="sticky_close", emoji="❌")
-    async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        thread = self.bot.threads.find(channel=interaction.channel)
-        if not thread:
-            return await interaction.response.send_message("This is not an active Modmail thread.", ephemeral=True)
-
-        await interaction.response.defer()
-
-        # Build a synthetic context with your prefix '-' to run native close command
         message = interaction.message
         message.content = "-close"
         message.author = interaction.user
-
+        
         ctx = await self.bot.get_context(message)
         if ctx.command:
             await self.bot.invoke(ctx)
         else:
             await interaction.followup.send("Failed to execute close command.", ephemeral=True)
 
-    @discord.ui.button(label="User Info", style=discord.ButtonStyle.secondary, custom_id="sticky_info", emoji="👤")
-    async def info_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, custom_id="confirm_close_no")
+    async def confirm_no(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await interaction.response.send_message("Thread closure cancelled.", ephemeral=True)
+
+
+class StickyPanelView(discord.ui.View):
+    def __init__(self, bot):
+        super().__init__(timeout=None)
+        self.bot = bot
+
+    async def _invoke_alias(self, interaction: discord.Interaction, command_name: str):
         thread = self.bot.threads.find(channel=interaction.channel)
-        if thread and getattr(thread, "recipient", None):
-            user = thread.recipient
-            embed = discord.Embed(
-                title=f"User Info: {user.name}", 
-                color=discord.Color.blue()
-            )
-            embed.add_field(name="Account ID", value=f"`{user.id}`", inline=True)
-            embed.add_field(name="Account Created", value=f"<t:{int(user.created_at.timestamp())}:R>", inline=True)
-            embed.set_thumbnail(url=user.display_avatar.url)
-            return await interaction.response.send_message(embed=embed, ephemeral=True)
-        
-        await interaction.response.send_message("Could not fetch user details.", ephemeral=True)
+        if not thread:
+            return await interaction.response.send_message("This is not an active Modmail thread.", ephemeral=True)
+
+        await interaction.response.defer()
+
+        message = interaction.message
+        message.content = f"-{command_name}"
+        message.author = interaction.user
+
+        ctx = await self.bot.get_context(message)
+        if ctx.command:
+            await self.bot.invoke(ctx)
+        else:
+            await interaction.followup.send(f"Failed to execute alias `-{command_name}`.", ephemeral=True)
+
+    @discord.ui.button(label="Greeting", style=discord.ButtonStyle.primary, custom_id="sticky_greeting", emoji="👋", row=0)
+    async def greeting_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._invoke_alias(interaction, "greeting")
+
+    @discord.ui.button(label="No Reply", style=discord.ButtonStyle.primary, custom_id="sticky_noreply", emoji="⏰", row=0)
+    async def noreply_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._invoke_alias(interaction, "noreply")
+
+    @discord.ui.button(label="Warn", style=discord.ButtonStyle.danger, custom_id="sticky_warn", emoji="⚠️", row=0)
+    async def warn_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._invoke_alias(interaction, "warn")
+
+    @discord.ui.button(label="Delay", style=discord.ButtonStyle.secondary, custom_id="sticky_delay", emoji="⏳", row=1)
+    async def delay_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        await self._invoke_alias(interaction, "delay")
+
+    @discord.ui.button(label="Close", style=discord.ButtonStyle.danger, custom_id="sticky_close", emoji="❌", row=1)
+    async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button):
+        thread = self.bot.threads.find(channel=interaction.channel)
+        if not thread:
+            return await interaction.response.send_message("This is not an active Modmail thread.", ephemeral=True)
+
+        view = ConfirmCloseView(self.bot)
+        await interaction.response.send_message(
+            "⚠️ **Are you sure you want to close this ticket thread?**", 
+            view=view, 
+            ephemeral=True
+        )
 
 
 class StickyPanel(commands.Cog):
@@ -69,18 +85,16 @@ class StickyPanel(commands.Cog):
 
     def build_panel_embed(self):
         embed = discord.Embed(
-            title="⚡ Ticket Staff Control Panel",
-            description="Quick actions for managing this ticket. This panel sticks to the bottom of the channel.",
+            title="⚡ Ticket Control Panel",
+            description="Select an action below to manage this ticket.",
             color=discord.Color.blurple()
         )
         return embed
 
     async def resend_sticky(self, channel):
-        # Strict check: Panel ONLY posts in server channels (never in user DMs)
         if not isinstance(channel, discord.TextChannel):
             return
 
-        # 2-second delay before moving the panel
         await asyncio.sleep(2)
 
         old_msg_id = self.sticky_messages.get(channel.id)
@@ -97,17 +111,14 @@ class StickyPanel(commands.Cog):
 
     @commands.Cog.listener()
     async def on_thread_ready(self, thread, account, issue, logs):
-        """Sends the panel when a thread is first opened."""
         if hasattr(thread, "channel") and thread.channel:
             await self.resend_sticky(thread.channel)
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        """Re-sends the panel whenever a message arrives in the staff thread channel."""
         if message.author.bot:
             return
 
-        # Ensure message is inside the staff guild server
         if message.guild:
             thread = self.bot.threads.find(channel=message.channel)
             if thread:
