@@ -7,12 +7,12 @@ from discord.ext import commands
 CONFIG_PATH = "sticky_panel_config.json"
 
 DEFAULT_CONFIG = {
-    "enabled": False,
+    "enabled": False,  # Disabled by default
     "delay": 1.5,
     "title": "⚡ Ticket Control Panel",
     "description": "Select an action below to manage this ticket.",
     "color": 0x5865F2,  # Blurple
-    "categories": [],
+    "categories": [],   # None by default
     "buttons": [
         {"label": "Greeting", "alias": "greeting", "style": "primary", "emoji": "👋", "row": 1},
         {"label": "No Reply", "alias": "noreply", "style": "secondary", "emoji": "⏰", "row": 1},
@@ -41,7 +41,6 @@ def load_config():
     try:
         with open(CONFIG_PATH, "r") as f:
             data = json.load(f)
-            # Fallback keys if config exists from older version
             data.setdefault("buttons", DEFAULT_CONFIG["buttons"])
             data.setdefault("categories", [])
             return data
@@ -159,12 +158,12 @@ class StickyPanelView(discord.ui.View):
         super().__init__(timeout=None)
         self.bot = bot
 
-        # Row 0: Category Dropdown (if configured)
+        # Category Dropdown (if configured)
         if config.get("categories"):
             try:
                 self.add_item(CategorySelect(self.bot, config["categories"]))
             except Exception as e:
-                print(f"[StickyPanel] Error loading dropdown categories: {e}")
+                print(f"[StickyPanel] Error loading categories: {e}")
 
         # Configured Action Buttons
         for btn in config.get("buttons", []):
@@ -177,9 +176,9 @@ class StickyPanelView(discord.ui.View):
                     row=btn.get("row", 1)
                 ))
             except Exception as e:
-                print(f"[StickyPanel] Failed to add button '{btn.get('label')}': {e}")
+                print(f"[StickyPanel] Error loading button '{btn.get('label')}': {e}")
 
-        # Static Close Thread Button (Row 2 by default)
+        # Close Thread Button
         close_btn = discord.ui.Button(
             label="Close Thread", 
             style=discord.ButtonStyle.danger, 
@@ -235,7 +234,7 @@ class StickyPanel(commands.Cog):
         async with lock:
             await asyncio.sleep(self.config.get("delay", 1.5))
 
-            # Delete existing panel
+            # Delete old panel
             old_msg_id = self.sticky_messages.get(channel.id)
             if old_msg_id:
                 try:
@@ -244,42 +243,39 @@ class StickyPanel(commands.Cog):
                 except Exception:
                     pass
 
-            # Send fresh panel
+            # Send new panel
             try:
                 view = StickyPanelView(self.bot, self.config)
                 new_msg = await channel.send(embed=self.build_panel_embed(), view=view)
                 self.sticky_messages[channel.id] = new_msg.id
             except Exception as e:
-                print(f"[StickyPanel] Exception during send: {e}")
+                print(f"[StickyPanel] Error sending panel: {e}")
                 self.sticky_messages.pop(channel.id, None)
 
-    # --- MAIN COMMAND GROUP ---
+    # --- COMMANDS ---
     @commands.group(name="stickypanel", invoke_without_command=True)
     @commands.has_permissions(administrator=True)
     async def stickypanel_cmd(self, ctx):
-        """Displays current sticky panel configuration."""
+        """Displays sticky panel settings."""
         embed = discord.Embed(title="⚙️ Sticky Panel Settings", color=discord.Color.blue())
         embed.add_field(name="Status", value="🟢 Enabled" if self.config.get("enabled") else "🔴 Disabled", inline=True)
         embed.add_field(name="Delay", value=f"`{self.config.get('delay')}s`", inline=True)
         embed.add_field(name="Title", value=self.config.get("title"), inline=False)
         
-        # Display Categories
         cats = self.config.get("categories", [])
         cats_text = "\n".join([f"• {c['label']} -> `{c['value']}`" for c in cats]) if cats else "*None configured*"
-        embed.add_field(name="Dropdown Categories", value=cats_text, inline=False)
+        embed.add_field(name="Categories", value=cats_text, inline=False)
         
-        # Display Custom Buttons
         btns = self.config.get("buttons", [])
-        btns_text = "\n".join([f"• **{b['label']}** (`-{b['alias']}`) [{b.get('style', 'primary')}]" for b in btns]) if btns else "*None configured*"
-        embed.add_field(name="Action Buttons", value=btns_text, inline=False)
+        btns_text = "\n".join([f"• **{b['label']}** (`-{b['alias']}`)" for b in btns]) if btns else "*None configured*"
+        embed.add_field(name="Buttons", value=btns_text, inline=False)
 
-        embed.set_footer(text="Use -stickypanel help to see all management commands.")
+        embed.set_footer(text="Use -stickypanel enable | addcategory | addbutton")
         await ctx.send(embed=embed)
 
     @stickypanel_cmd.command(name="enable")
     @commands.has_permissions(administrator=True)
     async def enable_panel(self, ctx):
-        """Enables the sticky panel."""
         self.config["enabled"] = True
         save_config(self.config)
         await ctx.send("✅ **Sticky Panel enabled!**")
@@ -287,40 +283,29 @@ class StickyPanel(commands.Cog):
     @stickypanel_cmd.command(name="disable")
     @commands.has_permissions(administrator=True)
     async def disable_panel(self, ctx):
-        """Disables the sticky panel."""
         self.config["enabled"] = False
         save_config(self.config)
         await ctx.send("🛑 **Sticky Panel disabled.**")
 
-    # --- BUTTON MANAGEMENT COMMANDS ---
     @stickypanel_cmd.command(name="addbutton")
     @commands.has_permissions(administrator=True)
     async def add_button(self, ctx, label: str, alias: str, style: str = "primary", emoji: str = None, row: int = 1):
-        """Adds or updates a button: -stickypanel addbutton "Claim" "claim" "success" "🔒" 1"""
         if style.lower() not in STYLE_MAP:
-            return await ctx.send("❌ Invalid style. Valid options: `primary`, `secondary`, `success`, `danger` (or `blue`, `grey`, `green`, `red`).")
+            return await ctx.send("❌ Valid styles: `primary`, `secondary`, `success`, `danger`.")
 
-        # Check if button label already exists, update if it does
         existing = next((b for b in self.config["buttons"] if b["label"].lower() == label.lower()), None)
         if existing:
             existing.update({"alias": alias, "style": style.lower(), "emoji": emoji, "row": row})
-            await ctx.send(f"✅ Updated existing button **{label}** to run `-{alias}`.")
+            await ctx.send(f"✅ Updated button **{label}** -> `-{alias}`.")
         else:
-            self.config["buttons"].append({
-                "label": label,
-                "alias": alias,
-                "style": style.lower(),
-                "emoji": emoji,
-                "row": row
-            })
-            await ctx.send(f"✅ Added button **{label}** -> runs `-{alias}`.")
+            self.config["buttons"].append({"label": label, "alias": alias, "style": style.lower(), "emoji": emoji, "row": row})
+            await ctx.send(f"✅ Added button **{label}** -> `-{alias}`.")
 
         save_config(self.config)
 
     @stickypanel_cmd.command(name="removebutton")
     @commands.has_permissions(administrator=True)
     async def remove_button(self, ctx, label: str):
-        """Removes a button by label: -stickypanel removebutton "Greeting" """
         initial = len(self.config["buttons"])
         self.config["buttons"] = [b for b in self.config["buttons"] if b["label"].lower() != label.lower()]
         
@@ -330,11 +315,9 @@ class StickyPanel(commands.Cog):
         else:
             await ctx.send(f"❌ Button **{label}** not found.")
 
-    # --- CATEGORY MANAGEMENT COMMANDS ---
     @stickypanel_cmd.command(name="addcategory")
     @commands.has_permissions(administrator=True)
     async def add_category(self, ctx, label: str, value: str, emoji: str = None):
-        """Adds a dropdown category: -stickypanel addcategory "Executive Team" "Executive Team" "👔" """
         self.config["categories"].append({
             "label": label,
             "value": value,
@@ -342,12 +325,11 @@ class StickyPanel(commands.Cog):
             "emoji": emoji
         })
         save_config(self.config)
-        await ctx.send(f"✅ Added category **{label}** (`{value}`) to dropdown menu.")
+        await ctx.send(f"✅ Added category **{label}** (`{value}`) to dropdown.")
 
     @stickypanel_cmd.command(name="removecategory")
     @commands.has_permissions(administrator=True)
     async def remove_category(self, ctx, label: str):
-        """Removes a category by label: -stickypanel removecategory "Executive Team" """
         initial = len(self.config["categories"])
         self.config["categories"] = [c for c in self.config["categories"] if c["label"].lower() != label.lower()]
         
@@ -357,13 +339,32 @@ class StickyPanel(commands.Cog):
         else:
             await ctx.send(f"❌ Category **{label}** not found.")
 
-    @stickypanel_cmd.command(name="settitle")
+    @stickypanel_cmd.command(name="clearcategories")
     @commands.has_permissions(administrator=True)
-    async def set_title(self, ctx, *, title: str):
-        """Sets panel embed title: -stickypanel settitle Support Control Center"""
-        self.config["title"] = title
+    async def clear_categories(self, ctx):
+        self.config["categories"] = []
         save_config(self.config)
-        await ctx.send(f"✅ Panel title updated to: **{title}**")
+        await ctx.send("✅ Cleared all categories.")
+
+    # --- LISTENERS ---
+    @commands.Cog.listener()
+    async def on_thread_ready(self, thread, account, issue, logs):
+        if hasattr(thread, "channel") and thread.channel:
+            await self.resend_sticky(thread.channel)
+
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        # Must be sent by the bot inside an active thread
+        if message.author != self.bot.user:
+            return
+
+        if message.embeds and message.embeds[0].title == self.config.get("title"):
+            return
+
+        if message.guild:
+            thread = await self.bot.threads.find(channel=message.channel)
+            if thread:
+                await self.resend_sticky(message.channel)
 
 
 async def setup(bot):
