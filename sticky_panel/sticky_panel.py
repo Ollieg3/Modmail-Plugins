@@ -38,29 +38,26 @@ class StickyPanelView(discord.ui.View):
 
         await interaction.response.defer()
 
-        # Build a message object formatted as if the staff member typed '-<alias_name>'
         message = interaction.message
         message.content = f"-{alias_name}"
         message.author = interaction.user
 
         ctx = await self.bot.get_context(message)
 
-        # 1. Check if it's a registered native command or alias
+        # 1. Check core command
         if ctx.command:
             await self.bot.invoke(ctx)
             return
 
-        # 2. Check MongoDB snippets dynamically if it's not a core command
+        # 2. Check MongoDB snippet
         snippets_cog = self.bot.get_cog("Snippets")
         if snippets_cog:
-            # Look up snippet in MongoDB via Modmail's Snippet Manager
             snippet = await snippets_cog.get_snippet(alias_name)
             if snippet:
-                # Execute the snippet in thread context (sends reply to user)
                 await snippets_cog.send_snippet(ctx, snippet)
                 return
 
-        # 3. Fallback: process raw message command dispatch via bot process
+        # 3. Fallback command processing
         await self.bot.process_commands(message)
 
     @discord.ui.button(label="Greeting", style=discord.ButtonStyle.primary, custom_id="sticky_greeting", emoji="👋", row=0)
@@ -97,6 +94,12 @@ class StickyPanel(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.sticky_messages = {}
+        self.locks = {}
+
+    def get_lock(self, channel_id):
+        if channel_id not in self.locks:
+            self.locks[channel_id] = asyncio.Lock()
+        return self.locks[channel_id]
 
     def build_panel_embed(self):
         embed = discord.Embed(
@@ -110,22 +113,27 @@ class StickyPanel(commands.Cog):
         if not isinstance(channel, discord.TextChannel):
             return
 
-        await asyncio.sleep(2)
+        lock = self.get_lock(channel.id)
+        
+        async with lock:
+            await asyncio.sleep(1.5)
 
-        old_msg_id = self.sticky_messages.get(channel.id)
-        if old_msg_id:
+            # Delete old sticky panel
+            old_msg_id = self.sticky_messages.get(channel.id)
+            if old_msg_id:
+                try:
+                    old_msg = await channel.fetch_message(old_msg_id)
+                    await old_msg.delete()
+                except Exception:
+                    pass
+
+            # Send fresh sticky panel at the bottom
             try:
-                old_msg = await channel.fetch_message(old_msg_id)
-                await old_msg.delete()
-            except Exception:
-                pass
-
-        try:
-            view = StickyPanelView(self.bot)
-            new_msg = await channel.send(embed=self.build_panel_embed(), view=view)
-            self.sticky_messages[channel.id] = new_msg.id
-        except (discord.NotFound, discord.HTTPException):
-            self.sticky_messages.pop(channel.id, None)
+                view = StickyPanelView(self.bot)
+                new_msg = await channel.send(embed=self.build_panel_embed(), view=view)
+                self.sticky_messages[channel.id] = new_msg.id
+            except (discord.NotFound, discord.HTTPException):
+                self.sticky_messages.pop(channel.id, None)
 
     @commands.Cog.listener()
     async def on_thread_ready(self, thread, account, issue, logs):
@@ -134,8 +142,10 @@ class StickyPanel(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        if message.author.bot:
-            return
+        # We allow bot messages to trigger the sticky update, so long as it's not the sticky panel itself!
+        if message.author == self.bot.user and message.embeds:
+            if message.embeds[0].title == "⚡ Ticket Control Panel":
+                return
 
         if message.guild:
             thread = await self.bot.threads.find(channel=message.channel)
