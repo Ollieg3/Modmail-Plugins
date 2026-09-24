@@ -22,6 +22,7 @@ STYLE_MAP = {
     "success": discord.ButtonStyle.success,
     "danger": discord.ButtonStyle.danger,
     "blurple": discord.ButtonStyle.primary,
+    "blue": discord.ButtonStyle.primary,
     "grey": discord.ButtonStyle.secondary,
     "gray": discord.ButtonStyle.secondary,
     "green": discord.ButtonStyle.success,
@@ -71,9 +72,9 @@ class AddButtonModal(discord.ui.Modal, title="➕ Add / Edit Action Button"):
         required=True
     )
     style_input = discord.ui.TextInput(
-        label="Style (primary, secondary, success, danger)",
-        placeholder="primary",
-        default="primary",
+        label="Color Style (blue, grey, green, red)",
+        placeholder="blue",
+        default="blue",
         max_length=20,
         required=False
     )
@@ -96,9 +97,9 @@ class AddButtonModal(discord.ui.Modal, title="➕ Add / Edit Action Button"):
         self.cog = cog
 
     async def on_submit(self, interaction: discord.Interaction):
-        style_val = self.style_input.value.strip().lower() or "primary"
+        style_val = self.style_input.value.strip().lower() or "blue"
         if style_val not in STYLE_MAP:
-            return await interaction.response.send_message("❌ Invalid style! Use: `primary`, `secondary`, `success`, or `danger`.", ephemeral=True)
+            return await interaction.response.send_message("❌ Invalid color style! Use: `blue`, `grey`, `green`, or `red`.", ephemeral=True)
 
         try:
             row_val = int(self.row_input.value.strip() or 1)
@@ -136,8 +137,8 @@ class AddCategoryModal(discord.ui.Modal, title="📁 Add / Edit Category Option"
         required=True
     )
     value_input = discord.ui.TextInput(
-        label="Target Category Name (used for -move)",
-        placeholder="e.g. Executive Team",
+        label="Target Category ID (used for -move ID)",
+        placeholder="e.g. 123456789012345678",
         max_length=100,
         required=True
     )
@@ -181,7 +182,7 @@ class AddCategoryModal(discord.ui.Modal, title="📁 Add / Edit Category Option"
                 "emoji": emoji_val,
                 "alias": alias_val
             })
-            msg = f"✅ Added category **{label_val}** (`{value_val}`) to dropdown menu."
+            msg = f"✅ Added category **{label_val}** (ID: `{value_val}`) to dropdown menu."
 
         save_config(self.cog.config)
         await interaction.response.send_message(msg, ephemeral=True)
@@ -261,12 +262,12 @@ class CategorySelect(discord.ui.Select):
             cat_data = next((c for c in self.categories if c.get("value") == selected_value or c.get("label") == selected_value), None)
             alias_to_run = cat_data.get("alias") if cat_data else None
 
-            status_msg = f"⌛ Moving thread to `{selected_value}`..."
+            status_msg = f"⌛ Moving thread..."
             if alias_to_run:
                 status_msg += f" and running `-{alias_to_run}`..."
             await interaction.response.send_message(status_msg, ephemeral=True)
 
-            # Move command
+            # Move command using ID
             move_msg = interaction.message
             move_msg.content = f"-move {selected_value}"
             move_msg.author = interaction.user
@@ -351,7 +352,7 @@ class StickyPanelView(discord.ui.View):
                 self.add_item(DynamicButton(
                     label=btn["label"],
                     alias=btn["alias"],
-                    style=btn.get("style", "primary"),
+                    style=btn.get("style", "blue"),
                     emoji=btn.get("emoji"),
                     row=btn_row
                 ))
@@ -445,7 +446,7 @@ class StickyPanel(commands.Cog):
         embed.add_field(name="Title", value=self.config.get("title"), inline=False)
         
         cats = self.config.get("categories", [])
-        cats_text = "\n".join([f"• {c['label']} -> `{c['value']}`" + (f" (Runs `-{c['alias']}`)" if c.get('alias') else "") for c in cats]) if cats else "*None configured*"
+        cats_text = "\n".join([f"• {c['label']} -> ID: `{c['value']}`" + (f" (Runs `-{c['alias']}`)" if c.get('alias') else "") for c in cats]) if cats else "*None configured*"
         embed.add_field(name="Categories", value=cats_text, inline=False)
         
         btns = self.config.get("buttons", [])
@@ -472,7 +473,6 @@ class StickyPanel(commands.Cog):
     @stickypanel_cmd.command(name="addbutton")
     @commands.has_permissions(administrator=True)
     async def add_button(self, ctx):
-        """Opens a modal form to add or edit a panel button."""
         if ctx.interaction:
             await ctx.interaction.response.send_modal(AddButtonModal(self))
         else:
@@ -499,7 +499,6 @@ class StickyPanel(commands.Cog):
     @stickypanel_cmd.command(name="addcategory")
     @commands.has_permissions(administrator=True)
     async def add_category(self, ctx):
-        """Opens a modal form to add or edit a category option."""
         if ctx.interaction:
             await ctx.interaction.response.send_modal(AddCategoryModal(self))
         else:
