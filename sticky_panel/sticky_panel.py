@@ -8,16 +8,15 @@ class StickyPanelView(discord.ui.View):
 
     @discord.ui.button(label="Claim Thread", style=discord.ButtonStyle.success, custom_id="sticky_claim", emoji="🔒")
     async def claim_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        thread = interaction.client.threads.get(interaction.channel_id)
+        thread = self.bot.threads.find(channel_id=interaction.channel_id)
         if not thread:
             return await interaction.response.send_message("This is not an active Modmail thread.", ephemeral=True)
         
-        # Invoke claim logic
         await interaction.response.send_message(f"🔒 **Thread claimed by {interaction.user.mention}.**")
 
     @discord.ui.button(label="Close Thread", style=discord.ButtonStyle.danger, custom_id="sticky_close", emoji="❌")
     async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        thread = interaction.client.threads.get(interaction.channel_id)
+        thread = self.bot.threads.find(channel_id=interaction.channel_id)
         if not thread:
             return await interaction.response.send_message("This is not an active Modmail thread.", ephemeral=True)
 
@@ -29,8 +28,8 @@ class StickyPanelView(discord.ui.View):
 
     @discord.ui.button(label="User Info", style=discord.ButtonStyle.secondary, custom_id="sticky_info", emoji="👤")
     async def info_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        thread = interaction.client.threads.get(interaction.channel_id)
-        if thread and thread.recipient:
+        thread = self.bot.threads.find(channel_id=interaction.channel_id)
+        if thread and getattr(thread, "recipient", None):
             user = thread.recipient
             embed = discord.Embed(
                 title=f"User Info: {user.name}", 
@@ -47,7 +46,6 @@ class StickyPanelView(discord.ui.View):
 class StickyPanel(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        # Track the last panel message ID per channel
         self.sticky_messages = {}
 
     def build_panel_embed(self):
@@ -59,16 +57,14 @@ class StickyPanel(commands.Cog):
         return embed
 
     async def resend_sticky(self, channel):
-        # Delete previous sticky message if it exists
         old_msg_id = self.sticky_messages.get(channel.id)
         if old_msg_id:
             try:
                 old_msg = await channel.fetch_message(old_msg_id)
                 await old_msg.delete()
             except Exception:
-                pass  # Ignore if deleted manually
+                pass
 
-        # Send new sticky message
         view = StickyPanelView(self.bot)
         new_msg = await channel.send(embed=self.build_panel_embed(), view=view)
         self.sticky_messages[channel.id] = new_msg.id
@@ -84,12 +80,11 @@ class StickyPanel(commands.Cog):
         if message.author.bot:
             return
 
-        # Check if the channel is an active Modmail thread
-        thread = self.bot.threads.get(message.channel.id)
+        # Fixed: using self.bot.threads.find(channel_id=...) instead of .get()
+        thread = self.bot.threads.find(channel_id=message.channel.id)
         if thread:
             await self.resend_sticky(message.channel)
 
 
 async def setup(bot):
     await bot.add_cog(StickyPanel(bot))
-
