@@ -62,19 +62,19 @@ def save_config(config):
 # --- MODALS FOR CONFIGURATION ---
 class AddButtonModal(discord.ui.Modal, title="➕ Add / Edit Action Button"):
     label_input = discord.ui.TextInput(
-        label="Button Text Label",
+        label="Button Label",
         placeholder="e.g. Refund",
         max_length=80,
         required=True
     )
     alias_input = discord.ui.TextInput(
-        label="Command / Snippet Alias (without prefix)",
+        label="Command Alias (without prefix)",
         placeholder="e.g. refund",
         max_length=50,
         required=True
     )
     category_input = discord.ui.TextInput(
-        label="Category ID (Optional: blank for all categories)",
+        label="Category ID (Optional)",
         placeholder="e.g. 123456789012345678",
         max_length=100,
         required=False
@@ -87,7 +87,7 @@ class AddButtonModal(discord.ui.Modal, title="➕ Add / Edit Action Button"):
         required=False
     )
     row_input = discord.ui.TextInput(
-        label="Row (1-4): Line placement (Max 5 buttons/row)",
+        label="Row (1-4)",
         placeholder="1",
         default="1",
         max_length=1,
@@ -149,25 +149,25 @@ class AddButtonModal(discord.ui.Modal, title="➕ Add / Edit Action Button"):
 
 class AddCategoryModal(discord.ui.Modal, title="📁 Add / Edit Category Option"):
     label_input = discord.ui.TextInput(
-        label="Dropdown Label (What staff see)",
+        label="Dropdown Label",
         placeholder="e.g. Billing",
         max_length=100,
         required=True
     )
     value_input = discord.ui.TextInput(
-        label="Target Category ID (used for -move ID)",
+        label="Target Category ID",
         placeholder="e.g. 123456789012345678",
         max_length=100,
         required=True
     )
     emoji_input = discord.ui.TextInput(
-        label="Emoji (Optional Unicode Emoji)",
+        label="Emoji (Optional)",
         placeholder="e.g. 💳",
         max_length=10,
         required=False
     )
     alias_input = discord.ui.TextInput(
-        label="Auto-run Alias/Snippet upon selection",
+        label="Auto-run Alias/Snippet",
         placeholder="e.g. billing_snippet",
         max_length=50,
         required=False
