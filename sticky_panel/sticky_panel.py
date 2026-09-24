@@ -31,22 +31,37 @@ class StickyPanelView(discord.ui.View):
         super().__init__(timeout=None)
         self.bot = bot
 
-    async def _invoke_alias(self, interaction: discord.Interaction, command_name: str):
+    async def _invoke_alias(self, interaction: discord.Interaction, alias_name: str):
         thread = await self.bot.threads.find(channel=interaction.channel)
         if not thread:
             return await interaction.response.send_message("This is not an active Modmail thread.", ephemeral=True)
 
         await interaction.response.defer()
 
+        # Build a message object formatted as if the staff member typed '-<alias_name>'
         message = interaction.message
-        message.content = f"-{command_name}"
+        message.content = f"-{alias_name}"
         message.author = interaction.user
 
         ctx = await self.bot.get_context(message)
+
+        # 1. Check if it's a registered native command or alias
         if ctx.command:
             await self.bot.invoke(ctx)
-        else:
-            await interaction.followup.send(f"Failed to execute alias `-{command_name}`.", ephemeral=True)
+            return
+
+        # 2. Check MongoDB snippets dynamically if it's not a core command
+        snippets_cog = self.bot.get_cog("Snippets")
+        if snippets_cog:
+            # Look up snippet in MongoDB via Modmail's Snippet Manager
+            snippet = await snippets_cog.get_snippet(alias_name)
+            if snippet:
+                # Execute the snippet in thread context (sends reply to user)
+                await snippets_cog.send_snippet(ctx, snippet)
+                return
+
+        # 3. Fallback: process raw message command dispatch via bot process
+        await self.bot.process_commands(message)
 
     @discord.ui.button(label="Greeting", style=discord.ButtonStyle.primary, custom_id="sticky_greeting", emoji="👋", row=0)
     async def greeting_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -97,7 +112,6 @@ class StickyPanel(commands.Cog):
 
         await asyncio.sleep(2)
 
-        # Delete old panel message if present
         old_msg_id = self.sticky_messages.get(channel.id)
         if old_msg_id:
             try:
@@ -106,16 +120,12 @@ class StickyPanel(commands.Cog):
             except Exception:
                 pass
 
-        # Safely attempt sending new sticky message
         try:
             view = StickyPanelView(self.bot)
             new_msg = await channel.send(embed=self.build_panel_embed(), view=view)
             self.sticky_messages[channel.id] = new_msg.id
-        except discord.NotFound:
-            # Channel was deleted or closed during the 2-second delay
+        except (discord.NotFound, discord.HTTPException):
             self.sticky_messages.pop(channel.id, None)
-        except Exception:
-            pass
 
     @commands.Cog.listener()
     async def on_thread_ready(self, thread, account, issue, logs):
