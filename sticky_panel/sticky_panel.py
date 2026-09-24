@@ -7,13 +7,13 @@ from discord.ext import commands
 CONFIG_PATH = "sticky_panel_config.json"
 
 DEFAULT_CONFIG = {
-    "enabled": False,  # Disabled by default
+    "enabled": False,
     "delay": 1.5,
     "title": "⚡ Ticket Control Panel",
     "description": "Select an action below to manage this ticket.",
-    "color": 0x5865F2,  # Blurple
-    "categories": [],   # Empty by default
-    "buttons": []       # Empty by default (Close button always renders last)
+    "color": 0x5865F2,
+    "categories": [],
+    "buttons": []
 }
 
 STYLE_MAP = {
@@ -43,11 +43,10 @@ def load_config():
             data.setdefault("title", "⚡ Ticket Control Panel")
             return data
     except Exception as e:
-        print(f"[StickyPanel] Config load failed ({e}). Reverting to default in-memory config.")
+        print(f"[StickyPanel] Config load failed ({e}). Reverting to default.")
         return DEFAULT_CONFIG
 
 def save_config(config):
-    # Atomic write to prevent file corruption if interrupted
     tmp_path = f"{CONFIG_PATH}.tmp"
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
@@ -55,6 +54,137 @@ def save_config(config):
         os.replace(tmp_path, CONFIG_PATH)
     except Exception as e:
         print(f"[StickyPanel] Error saving config: {e}")
+
+
+# --- MODALS FOR CONFIGURATION ---
+class AddButtonModal(discord.ui.Modal, title="➕ Add / Edit Action Button"):
+    label_input = discord.ui.TextInput(
+        label="Button Text Label",
+        placeholder="e.g. Greeting",
+        max_length=80,
+        required=True
+    )
+    alias_input = discord.ui.TextInput(
+        label="Command / Snippet Alias (without prefix)",
+        placeholder="e.g. greeting",
+        max_length=50,
+        required=True
+    )
+    style_input = discord.ui.TextInput(
+        label="Style (primary, secondary, success, danger)",
+        placeholder="primary",
+        default="primary",
+        max_length=20,
+        required=False
+    )
+    emoji_input = discord.ui.TextInput(
+        label="Emoji (Optional Unicode Emoji)",
+        placeholder="e.g. 👋",
+        max_length=10,
+        required=False
+    )
+    row_input = discord.ui.TextInput(
+        label="Row (1-4): Line placement (Max 5 buttons/row)",
+        placeholder="1",
+        default="1",
+        max_length=1,
+        required=False
+    )
+
+    def __init__(self, cog):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        style_val = self.style_input.value.strip().lower() or "primary"
+        if style_val not in STYLE_MAP:
+            return await interaction.response.send_message("❌ Invalid style! Use: `primary`, `secondary`, `success`, or `danger`.", ephemeral=True)
+
+        try:
+            row_val = int(self.row_input.value.strip() or 1)
+            row_val = min(max(row_val, 1), 4)
+        except ValueError:
+            return await interaction.response.send_message("❌ Row number must be a digit between 1 and 4.", ephemeral=True)
+
+        label_val = self.label_input.value.strip()
+        alias_val = self.alias_input.value.strip().lstrip("-")
+        emoji_val = self.emoji_input.value.strip() or None
+
+        existing = next((b for b in self.cog.config["buttons"] if b["label"].lower() == label_val.lower()), None)
+        if existing:
+            existing.update({"alias": alias_val, "style": style_val, "emoji": emoji_val, "row": row_val})
+            msg = f"✅ Updated existing button **{label_val}** to run `-{alias_val}`."
+        else:
+            self.cog.config["buttons"].append({
+                "label": label_val,
+                "alias": alias_val,
+                "style": style_val,
+                "emoji": emoji_val,
+                "row": row_val
+            })
+            msg = f"✅ Added button **{label_val}** -> runs `-{alias_val}`."
+
+        save_config(self.cog.config)
+        await interaction.response.send_message(msg, ephemeral=True)
+
+
+class AddCategoryModal(discord.ui.Modal, title="📁 Add / Edit Category Option"):
+    label_input = discord.ui.TextInput(
+        label="Dropdown Label (What staff see)",
+        placeholder="e.g. Executive Team",
+        max_length=100,
+        required=True
+    )
+    value_input = discord.ui.TextInput(
+        label="Target Category Name (used for -move)",
+        placeholder="e.g. Executive Team",
+        max_length=100,
+        required=True
+    )
+    emoji_input = discord.ui.TextInput(
+        label="Emoji (Optional Unicode Emoji)",
+        placeholder="e.g. 👔",
+        max_length=10,
+        required=False
+    )
+    alias_input = discord.ui.TextInput(
+        label="Auto-run Alias/Snippet upon selection",
+        placeholder="e.g. exec_transfer_snippet",
+        max_length=50,
+        required=False
+    )
+
+    def __init__(self, cog):
+        super().__init__()
+        self.cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction):
+        label_val = self.label_input.value.strip()
+        value_val = self.value_input.value.strip()
+        emoji_val = self.emoji_input.value.strip() or None
+        alias_val = self.alias_input.value.strip().lstrip("-") or None
+
+        existing = next((c for c in self.cog.config["categories"] if c["label"].lower() == label_val.lower()), None)
+        if existing:
+            existing.update({
+                "value": value_val,
+                "description": f"Move to {label_val}",
+                "emoji": emoji_val,
+                "alias": alias_val
+            })
+            msg = f"✅ Updated category **{label_val}**."
+        else:
+            self.cog.config["categories"].append({
+                "label": label_val,
+                "value": value_val,
+                "description": f"Move to {label_val}",
+                "emoji": emoji_val,
+                "alias": alias_val
+            })
+            msg = f"✅ Added category **{label_val}** (`{value_val}`) to dropdown menu."
+
+        save_config(self.cog.config)
+        await interaction.response.send_message(msg, ephemeral=True)
 
 
 # --- DYNAMIC BUTTON ---
@@ -97,14 +227,13 @@ class DynamicButton(discord.ui.Button):
             await self.view.bot.process_commands(message)
         except Exception as e:
             print(f"[StickyPanel] Error executing button action '{self.alias}': {e}")
-            if not interaction.response.is_done():
-                await interaction.response.send_message(f"❌ Failed to execute command `-{self.alias}`.", ephemeral=True)
 
 
 # --- CATEGORY DROPDOWN ---
 class CategorySelect(discord.ui.Select):
     def __init__(self, bot, categories):
         self.bot = bot
+        self.categories = categories
         options = []
         for cat in categories:
             options.append(discord.SelectOption(
@@ -128,20 +257,47 @@ class CategorySelect(discord.ui.Select):
             if not thread:
                 return await interaction.response.send_message("This is not an active Modmail thread.", ephemeral=True)
 
-            selected_category = self.values[0]
-            await interaction.response.send_message(f"⌛ Moving thread to `{selected_category}`...", ephemeral=True)
+            selected_value = self.values[0]
+            cat_data = next((c for c in self.categories if c.get("value") == selected_value or c.get("label") == selected_value), None)
+            alias_to_run = cat_data.get("alias") if cat_data else None
 
-            message = interaction.message
-            message.content = f"-move {selected_category}"
-            message.author = interaction.user
+            status_msg = f"⌛ Moving thread to `{selected_value}`..."
+            if alias_to_run:
+                status_msg += f" and running `-{alias_to_run}`..."
+            await interaction.response.send_message(status_msg, ephemeral=True)
 
-            ctx = await self.bot.get_context(message)
-            if ctx.command:
-                await self.bot.invoke(ctx)
+            # Move command
+            move_msg = interaction.message
+            move_msg.content = f"-move {selected_value}"
+            move_msg.author = interaction.user
+
+            ctx_move = await self.bot.get_context(move_msg)
+            if ctx_move.command:
+                await self.bot.invoke(ctx_move)
             else:
-                await self.bot.process_commands(message)
+                await self.bot.process_commands(move_msg)
+
+            # Alias execution
+            if alias_to_run:
+                await asyncio.sleep(0.5)
+                alias_msg = interaction.message
+                alias_msg.content = f"-{alias_to_run}"
+                alias_msg.author = interaction.user
+
+                ctx_alias = await self.bot.get_context(alias_msg)
+                if ctx_alias.command:
+                    await self.bot.invoke(ctx_alias)
+                else:
+                    snippets_cog = self.bot.get_cog("Snippets")
+                    if snippets_cog:
+                        snippet = await snippets_cog.get_snippet(alias_to_run)
+                        if snippet:
+                            await snippets_cog.send_snippet(ctx_alias, snippet)
+                            return
+                    await self.bot.process_commands(alias_msg)
+
         except Exception as e:
-            print(f"[StickyPanel] Category move error: {e}")
+            print(f"[StickyPanel] Category select error: {e}")
 
 
 # --- CLOSE CONFIRMATION VIEW ---
@@ -177,20 +333,18 @@ class StickyPanelView(discord.ui.View):
         super().__init__(timeout=None)
         self.bot = bot
 
-        # 1. Add Category Dropdown (Row 0)
         if config.get("categories"):
             try:
                 self.add_item(CategorySelect(self.bot, config["categories"]))
             except Exception as e:
                 print(f"[StickyPanel] Skipped invalid categories: {e}")
 
-        # 2. Add Dynamic Action Buttons
         configured_buttons = config.get("buttons", [])
         max_row_used = 1
 
         for btn in configured_buttons:
             try:
-                btn_row = min(max(btn.get("row", 1), 1), 4) # Bound row between 1 and 4
+                btn_row = min(max(btn.get("row", 1), 1), 4)
                 if btn_row > max_row_used:
                     max_row_used = btn_row
                     
@@ -204,7 +358,6 @@ class StickyPanelView(discord.ui.View):
             except Exception as e:
                 print(f"[StickyPanel] Skipped invalid button '{btn.get('label')}': {e}")
 
-        # 3. Permanent Close Thread Button (Always rendered last)
         close_row = max_row_used if len([b for b in configured_buttons if b.get("row", 1) == max_row_used]) < 5 else min(max_row_used + 1, 4)
         
         close_btn = discord.ui.Button(
@@ -264,10 +417,8 @@ class StickyPanel(commands.Cog):
         lock = self.get_lock(channel.id)
         
         async with lock:
-            # Wait configured delay to reduce API noise
             await asyncio.sleep(self.config.get("delay", 1.5))
 
-            # Delete old sticky message
             old_msg_id = self.sticky_messages.get(channel.id)
             if old_msg_id:
                 try:
@@ -276,7 +427,6 @@ class StickyPanel(commands.Cog):
                 except (discord.NotFound, discord.HTTPException, discord.Forbidden):
                     pass
 
-            # Send new sticky message safely
             try:
                 view = StickyPanelView(self.bot, self.config)
                 new_msg = await channel.send(embed=self.build_panel_embed(), view=view)
@@ -285,18 +435,17 @@ class StickyPanel(commands.Cog):
                 print(f"[StickyPanel] Failed to send panel in {channel.id}: {e}")
                 self.sticky_messages.pop(channel.id, None)
 
-    # --- COMMANDS ---
+    # --- COMMANDS WITH MODALS ---
     @commands.group(name="stickypanel", invoke_without_command=True)
     @commands.has_permissions(administrator=True)
     async def stickypanel_cmd(self, ctx):
-        """Displays sticky panel settings."""
         embed = discord.Embed(title="⚙️ Sticky Panel Settings", color=discord.Color.blue())
         embed.add_field(name="Status", value="🟢 Enabled" if self.config.get("enabled") else "🔴 Disabled", inline=True)
         embed.add_field(name="Delay", value=f"`{self.config.get('delay')}s`", inline=True)
         embed.add_field(name="Title", value=self.config.get("title"), inline=False)
         
         cats = self.config.get("categories", [])
-        cats_text = "\n".join([f"• {c['label']} -> `{c['value']}`" for c in cats]) if cats else "*None configured*"
+        cats_text = "\n".join([f"• {c['label']} -> `{c['value']}`" + (f" (Runs `-{c['alias']}`)" if c.get('alias') else "") for c in cats]) if cats else "*None configured*"
         embed.add_field(name="Categories", value=cats_text, inline=False)
         
         btns = self.config.get("buttons", [])
@@ -322,23 +471,22 @@ class StickyPanel(commands.Cog):
 
     @stickypanel_cmd.command(name="addbutton")
     @commands.has_permissions(administrator=True)
-    async def add_button(self, ctx, label: str, alias: str, style: str = "primary", emoji: str = None, row: int = 1):
-        if style.lower() not in STYLE_MAP:
-            return await ctx.send("❌ Valid styles: `primary`, `secondary`, `success`, `danger`.")
-
-        existing = next((b for b in self.config["buttons"] if b["label"].lower() == label.lower()), None)
-        if existing:
-            existing.update({"alias": alias, "style": style.lower(), "emoji": emoji, "row": row})
-            await ctx.send(f"✅ Updated button **{label}** -> `-{alias}`.")
+    async def add_button(self, ctx):
+        """Opens a modal form to add or edit a panel button."""
+        if ctx.interaction:
+            await ctx.interaction.response.send_modal(AddButtonModal(self))
         else:
-            self.config["buttons"].append({"label": label, "alias": alias, "style": style.lower(), "emoji": emoji, "row": row})
-            await ctx.send(f"✅ Added button **{label}** -> `-{alias}`.")
-
-        save_config(self.config)
+            button = discord.ui.Button(label="Open Button Form 📝", style=discord.ButtonStyle.primary)
+            async def btn_callback(interaction: discord.Interaction):
+                await interaction.response.send_modal(AddButtonModal(self))
+            button.callback = btn_callback
+            view = discord.ui.View()
+            view.add_item(button)
+            await ctx.send("Click below to configure the action button:", view=view)
 
     @stickypanel_cmd.command(name="removebutton")
     @commands.has_permissions(administrator=True)
-    async def remove_button(self, ctx, label: str):
+    async def remove_button(self, ctx, *, label: str):
         initial = len(self.config["buttons"])
         self.config["buttons"] = [b for b in self.config["buttons"] if b["label"].lower() != label.lower()]
         
@@ -350,19 +498,22 @@ class StickyPanel(commands.Cog):
 
     @stickypanel_cmd.command(name="addcategory")
     @commands.has_permissions(administrator=True)
-    async def add_category(self, ctx, label: str, value: str, emoji: str = None):
-        self.config["categories"].append({
-            "label": label,
-            "value": value,
-            "description": f"Move to {label}",
-            "emoji": emoji
-        })
-        save_config(self.config)
-        await ctx.send(f"✅ Added category **{label}** (`{value}`) to dropdown.")
+    async def add_category(self, ctx):
+        """Opens a modal form to add or edit a category option."""
+        if ctx.interaction:
+            await ctx.interaction.response.send_modal(AddCategoryModal(self))
+        else:
+            button = discord.ui.Button(label="Open Category Form 📁", style=discord.ButtonStyle.primary)
+            async def btn_callback(interaction: discord.Interaction):
+                await interaction.response.send_modal(AddCategoryModal(self))
+            button.callback = btn_callback
+            view = discord.ui.View()
+            view.add_item(button)
+            await ctx.send("Click below to configure the category option:", view=view)
 
     @stickypanel_cmd.command(name="removecategory")
     @commands.has_permissions(administrator=True)
-    async def remove_category(self, ctx, label: str):
+    async def remove_category(self, ctx, *, label: str):
         initial = len(self.config["categories"])
         self.config["categories"] = [c for c in self.config["categories"] if c["label"].lower() != label.lower()]
         
@@ -391,21 +542,18 @@ class StickyPanel(commands.Cog):
     @commands.Cog.listener()
     async def on_message(self, message):
         try:
-            # 1. Must be sent by the bot inside an active thread
             if message.author != self.bot.user:
                 return
 
-            # 2. Do not loop back on its own embed message
             if message.embeds and message.embeds[0].title == self.config.get("title"):
                 return
 
-            # 3. Re-trigger sticky loop in Modmail threads
             if message.guild:
                 thread = await self.bot.threads.find(channel=message.channel)
                 if thread:
                     await self.resend_sticky(message.channel)
         except Exception as e:
-            print(f"[StickyPanel] on_message listener error: {e}")
+            print(f"[StickyPanel] on_message error: {e}")
 
 
 async def setup(bot):
