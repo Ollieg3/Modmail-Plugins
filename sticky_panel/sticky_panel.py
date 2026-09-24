@@ -487,6 +487,7 @@ class StickyPanel(commands.Cog):
         self.bot = bot
         self.config = load_config()
         self.sticky_messages = {}
+        self.resending_channels = set()
         self.locks = {}
 
     def get_lock(self, channel_id):
@@ -520,23 +521,26 @@ class StickyPanel(commands.Cog):
         lock = self.get_lock(channel.id)
         
         async with lock:
-            await asyncio.sleep(self.config.get("delay", 1.5))
-
-            old_msg_id = self.sticky_messages.get(channel.id)
-            if old_msg_id:
-                try:
-                    old_msg = await channel.fetch_message(old_msg_id)
-                    await old_msg.delete()
-                except (discord.NotFound, discord.HTTPException, discord.Forbidden):
-                    pass
-
+            self.resending_channels.add(channel.id)
             try:
+                await asyncio.sleep(self.config.get("delay", 1.5))
+
+                old_msg_id = self.sticky_messages.get(channel.id)
+                if old_msg_id:
+                    try:
+                        old_msg = await channel.fetch_message(old_msg_id)
+                        await old_msg.delete()
+                    except (discord.NotFound, discord.HTTPException, discord.Forbidden):
+                        pass
+
                 view = StickyPanelView(self, channel)
                 new_msg = await channel.send(embed=self.build_panel_embed(), view=view)
                 self.sticky_messages[channel.id] = new_msg.id
             except discord.HTTPException as e:
                 print(f"[StickyPanel] Failed to send panel in {channel.id}: {e}")
                 self.sticky_messages.pop(channel.id, None)
+            finally:
+                self.resending_channels.remove(channel.id)
 
     # --- COMMANDS ---
     @commands.group(name="stickypanel", invoke_without_command=True)
@@ -629,11 +633,15 @@ class StickyPanel(commands.Cog):
         if not self.config.get("enabled", False):
             return
 
-        # Ignore only the sticky panel's own message ID to prevent infinite loops
+        # Ignore if the bot is currently processing a panel update for this channel
+        if message.channel.id in self.resending_channels:
+            return
+
+        # Ignore its own sticky message ID just in case
         if message.id == self.sticky_messages.get(message.channel.id):
             return
 
-        # Check if the channel is an active modmail thread
+        # STRICT THREAD CHECK ONLY: verify it's an active modmail thread
         is_thread = False
         try:
             if hasattr(self.bot, "threads"):
@@ -642,9 +650,6 @@ class StickyPanel(commands.Cog):
                     is_thread = True
         except Exception:
             pass
-
-        if not is_thread and message.channel.category:
-            is_thread = True
 
         if is_thread:
             await self.resend_sticky(message.channel)
