@@ -92,9 +92,10 @@ class AddButtonModal(discord.ui.Modal, title="➕ Add / Edit Action Button"):
         required=False
     )
 
-    def __init__(self, cog):
+    def __init__(self, cog, ctx):
         super().__init__()
         self.cog = cog
+        self.ctx = ctx
 
     async def on_submit(self, interaction: discord.Interaction):
         style_val = self.style_input.value.strip().lower() or "blue"
@@ -114,7 +115,7 @@ class AddButtonModal(discord.ui.Modal, title="➕ Add / Edit Action Button"):
         existing = next((b for b in self.cog.config["buttons"] if b["label"].lower() == label_val.lower()), None)
         if existing:
             existing.update({"alias": alias_val, "style": style_val, "emoji": emoji_val, "row": row_val})
-            msg = f"✅ Updated existing button **{label_val}** to run `-{alias_val}`."
+            action_type = "Updated"
         else:
             self.cog.config["buttons"].append({
                 "label": label_val,
@@ -123,10 +124,19 @@ class AddButtonModal(discord.ui.Modal, title="➕ Add / Edit Action Button"):
                 "emoji": emoji_val,
                 "row": row_val
             })
-            msg = f"✅ Added button **{label_val}** -> runs `-{alias_val}`."
+            action_type = "Added"
 
         save_config(self.cog.config)
-        await interaction.response.send_message(msg, ephemeral=True)
+        await interaction.response.defer() # Acknowledge modal silently
+        
+        # Send non-ephemeral message via context
+        await self.ctx.send(
+            f"✅ Successfully **{action_type}** button!\n"
+            f"• **Label:** {emoji_val or ''} {label_val}\n"
+            f"• **Runs Command:** `-{alias_val}`\n"
+            f"• **Color Style:** `{style_val}`\n"
+            f"• **Row Placement:** `{row_val}`"
+        )
 
 
 class AddCategoryModal(discord.ui.Modal, title="📁 Add / Edit Category Option"):
@@ -155,9 +165,10 @@ class AddCategoryModal(discord.ui.Modal, title="📁 Add / Edit Category Option"
         required=False
     )
 
-    def __init__(self, cog):
+    def __init__(self, cog, ctx):
         super().__init__()
         self.cog = cog
+        self.ctx = ctx
 
     async def on_submit(self, interaction: discord.Interaction):
         label_val = self.label_input.value.strip()
@@ -173,7 +184,7 @@ class AddCategoryModal(discord.ui.Modal, title="📁 Add / Edit Category Option"
                 "emoji": emoji_val,
                 "alias": alias_val
             })
-            msg = f"✅ Updated category **{label_val}**."
+            action_type = "Updated"
         else:
             self.cog.config["categories"].append({
                 "label": label_val,
@@ -182,16 +193,24 @@ class AddCategoryModal(discord.ui.Modal, title="📁 Add / Edit Category Option"
                 "emoji": emoji_val,
                 "alias": alias_val
             })
-            msg = f"✅ Added category **{label_val}** (ID: `{value_val}`) to dropdown menu."
+            action_type = "Added"
 
         save_config(self.cog.config)
-        await interaction.response.send_message(msg, ephemeral=True)
+        await interaction.response.defer()
+
+        await self.ctx.send(
+            f"✅ Successfully **{action_type}** category option!\n"
+            f"• **Dropdown Label:** {emoji_val or ''} {label_val}\n"
+            f"• **Target Category ID:** `{value_val}`\n"
+            f"• **Auto-run Snippet/Command:** `-{alias_val}`" if alias_val else f"• **Auto-run Snippet/Command:** *None*"
+        )
 
 
 # --- INTERACTIVE REMOVAL DROPDOWNS ---
 class RemoveButtonSelect(discord.ui.Select):
-    def __init__(self, cog):
+    def __init__(self, cog, ctx):
         self.cog = cog
+        self.ctx = ctx
         options = []
         for btn in cog.config["buttons"]:
             options.append(discord.SelectOption(
@@ -203,20 +222,28 @@ class RemoveButtonSelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         selected_label = self.values[0]
+        removed_btn = next((b for b in self.cog.config["buttons"] if b["label"] == selected_label), None)
         self.cog.config["buttons"] = [b for b in self.cog.config["buttons"] if b["label"] != selected_label]
         save_config(self.cog.config)
-        await interaction.response.edit_message(content=f"✅ Successfully removed button **{selected_label}**.", view=None)
+        
+        await interaction.message.delete()
+        await self.ctx.send(
+            f"🗑️ Successfully removed panel button:\n"
+            f"• **Label:** {selected_label}\n"
+            f"• **Was running:** `-{removed_btn['alias'] if removed_btn else 'unknown'}`"
+        )
 
 
 class RemoveButtonView(discord.ui.View):
-    def __init__(self, cog):
+    def __init__(self, cog, ctx):
         super().__init__(timeout=60)
-        self.add_item(RemoveButtonSelect(cog))
+        self.add_item(RemoveButtonSelect(cog, ctx))
 
 
 class RemoveCategorySelect(discord.ui.Select):
-    def __init__(self, cog):
+    def __init__(self, cog, ctx):
         self.cog = cog
+        self.ctx = ctx
         options = []
         for cat in cog.config["categories"]:
             options.append(discord.SelectOption(
@@ -228,15 +255,22 @@ class RemoveCategorySelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         selected_label = self.values[0]
+        removed_cat = next((c for c in self.cog.config["categories"] if c["label"] == selected_label), None)
         self.cog.config["categories"] = [c for c in self.cog.config["categories"] if c["label"] != selected_label]
         save_config(self.cog.config)
-        await interaction.response.edit_message(content=f"✅ Successfully removed category **{selected_label}**.", view=None)
+        
+        await interaction.message.delete()
+        await self.ctx.send(
+            f"🗑️ Successfully removed panel dropdown category:\n"
+            f"• **Label:** {selected_label}\n"
+            f"• **Target ID:** `{removed_cat['value'] if removed_cat else 'unknown'}`"
+        )
 
 
 class RemoveCategoryView(discord.ui.View):
-    def __init__(self, cog):
+    def __init__(self, cog, ctx):
         super().__init__(timeout=60)
-        self.add_item(RemoveCategorySelect(cog))
+        self.add_item(RemoveCategorySelect(cog, ctx))
 
 
 # --- DYNAMIC BUTTON ---
@@ -525,11 +559,11 @@ class StickyPanel(commands.Cog):
     @commands.has_permissions(administrator=True)
     async def add_button(self, ctx):
         if ctx.interaction:
-            await ctx.interaction.response.send_modal(AddButtonModal(self))
+            await ctx.interaction.response.send_modal(AddButtonModal(self, ctx))
         else:
             button = discord.ui.Button(label="Open Button Form 📝", style=discord.ButtonStyle.primary)
             async def btn_callback(interaction: discord.Interaction):
-                await interaction.response.send_modal(AddButtonModal(self))
+                await interaction.response.send_modal(AddButtonModal(self, ctx))
             button.callback = btn_callback
             view = discord.ui.View()
             view.add_item(button)
@@ -540,18 +574,18 @@ class StickyPanel(commands.Cog):
     async def remove_button(self, ctx):
         if not self.config["buttons"]:
             return await ctx.send("❌ There are no custom buttons configured to remove.")
-        view = RemoveButtonView(self)
+        view = RemoveButtonView(self, ctx)
         await ctx.send("Select the button you want to remove from the dropdown below:", view=view, ephemeral=True)
 
     @stickypanel_cmd.command(name="addcategory")
     @commands.has_permissions(administrator=True)
     async def add_category(self, ctx):
         if ctx.interaction:
-            await ctx.interaction.response.send_modal(AddCategoryModal(self))
+            await ctx.interaction.response.send_modal(AddCategoryModal(self, ctx))
         else:
             button = discord.ui.Button(label="Open Category Form 📁", style=discord.ButtonStyle.primary)
             async def btn_callback(interaction: discord.Interaction):
-                await interaction.response.send_modal(AddCategoryModal(self))
+                await interaction.response.send_modal(AddCategoryModal(self, ctx))
             button.callback = btn_callback
             view = discord.ui.View()
             view.add_item(button)
@@ -562,7 +596,7 @@ class StickyPanel(commands.Cog):
     async def remove_category(self, ctx):
         if not self.config["categories"]:
             return await ctx.send("❌ There are no categories configured to remove.")
-        view = RemoveCategoryView(self)
+        view = RemoveCategoryView(self, ctx)
         await ctx.send("Select the category you want to remove from the dropdown below:", view=view, ephemeral=True)
 
     @stickypanel_cmd.command(name="clearcategories")
