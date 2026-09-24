@@ -42,6 +42,8 @@ def load_config():
             data.setdefault("enabled", False)
             data.setdefault("delay", 1.5)
             data.setdefault("title", "⚡ Ticket Control Panel")
+            data.setdefault("description", "Select an action below to manage this ticket.")
+            data.setdefault("color", 0x5865F2)
             return data
     except Exception as e:
         print(f"[StickyPanel] Config load failed ({e}). Reverting to default.")
@@ -484,10 +486,17 @@ class StickyPanel(commands.Cog):
         return self.locks[channel_id]
 
     def build_panel_embed(self):
+        color_val = self.config.get("color", 0x5865F2)
+        if isinstance(color_val, str):
+            try:
+                color_val = int(color_val.lstrip("#"), 16)
+            except ValueError:
+                color_val = 0x5865F2
+
         embed = discord.Embed(
             title=self.config.get("title", "⚡ Ticket Control Panel"),
             description=self.config.get("description", "Select an action below to manage this ticket."),
-            color=self.config.get("color", 0x5865F2)
+            color=color_val
         )
         embed.set_footer(text="Support Centre Panel")
         return embed
@@ -549,30 +558,34 @@ class StickyPanel(commands.Cog):
             color=discord.Color.blue()
         )
         embed.add_field(
-            name="⚙️ General Control",
+            name="⚙️ General Control & Customization",
             value=(
                 "• `-stickypanel` - View current configuration status.\n"
-                "• `-stickypanel enable` - Enable the automatic sticky panel in threads.\n"
-                "• `-stickypanel disable` - Disable the sticky panel.\n"
+                "• `-stickypanel enable` / `disable` - Toggle automatic sticky panel.\n"
+                "• `-stickypanel preview` - Send a live test preview of the panel here.\n"
+                "• `-stickypanel settitle <text>` - Set embed header title.\n"
+                "• `-stickypanel setdescription <text>` - Set embed description.\n"
+                "• `-stickypanel setcolor <hex>` - Set embed border color (e.g. `#5865F2`).\n"
+                "• `-stickypanel delay <seconds>` - Set resend debounce rate limit delay.\n"
                 "• `-stickypanel help` - Show this help menu."
             ),
             inline=False
         )
         embed.add_field(
-            name="➕ Additions (Opens Interactive Forms)",
+            name="➕ Additions (Interactive Forms)",
             value=(
-                "• `-stickypanel addbutton` - Open a form to add/edit a custom action button.\n"
-                "• `-stickypanel addcategory` - Open a form to add/edit a dropdown category option."
+                "• `-stickypanel addbutton` - Add/edit custom action button.\n"
+                "• `-stickypanel addcategory` - Add/edit dropdown category transfer option."
             ),
             inline=False
         )
         embed.add_field(
             name="🗑️ Removals & Clearances",
             value=(
-                "• `-stickypanel removebutton` - Select an existing button to delete.\n"
-                "• `-stickypanel clearbuttons` - Wipe all custom action buttons instantly.\n"
-                "• `-stickypanel removecategory` - Select an existing category to delete.\n"
-                "• `-stickypanel clearcategories` - Wipe all configured categories instantly."
+                "• `-stickypanel removebutton` - Pick a button to delete.\n"
+                "• `-stickypanel clearbuttons` - Wipe all custom action buttons.\n"
+                "• `-stickypanel removecategory` - Pick a category to delete.\n"
+                "• `-stickypanel clearcategories` - Wipe all dropdown categories."
             ),
             inline=False
         )
@@ -592,6 +605,47 @@ class StickyPanel(commands.Cog):
         self.config["enabled"] = False
         save_config(self.config)
         await ctx.send("🛑 **Sticky Panel disabled.**")
+
+    @stickypanel_cmd.command(name="preview")
+    @commands.has_permissions(administrator=True)
+    async def panel_preview(self, ctx):
+        view = StickyPanelView(self.bot, self.config)
+        await ctx.send("🔍 **Panel Preview:** (This is how it looks in threads)", embed=self.build_panel_embed(), view=view)
+
+    @stickypanel_cmd.command(name="settitle")
+    @commands.has_permissions(administrator=True)
+    async def set_title(self, ctx, *, title: str):
+        self.config["title"] = title
+        save_config(self.config)
+        await ctx.send(f"✅ Successfully updated panel title to:\n> {title}")
+
+    @stickypanel_cmd.command(name="setdescription")
+    @commands.has_permissions(administrator=True)
+    async def set_description(self, ctx, *, description: str):
+        self.config["description"] = description
+        save_config(self.config)
+        await ctx.send(f"✅ Successfully updated panel description to:\n> {description}")
+
+    @stickypanel_cmd.command(name="setcolor")
+    @commands.has_permissions(administrator=True)
+    async def set_color(self, ctx, color_code: str):
+        try:
+            clean_hex = color_code.lstrip("#")
+            color_int = int(clean_hex, 16)
+            self.config["color"] = color_int
+            save_config(self.config)
+            await ctx.send(f"✅ Successfully updated panel embed color to `#{clean_hex.upper()}`!")
+        except ValueError:
+            await ctx.send("❌ Invalid color format! Please provide a valid Hex code (e.g., `-stickypanel setcolor #5865F2`).")
+
+    @stickypanel_cmd.command(name="delay")
+    @commands.has_permissions(administrator=True)
+    async def set_delay(self, ctx, seconds: float):
+        if seconds < 0.5 or seconds > 10.0:
+            return await ctx.send("❌ Delay must be between `0.5` and `10.0` seconds.")
+        self.config["delay"] = seconds
+        save_config(self.config)
+        await ctx.send(f"✅ Successfully updated sticky resend delay to `{seconds}s`.")
 
     @stickypanel_cmd.command(name="addbutton")
     @commands.has_permissions(administrator=True)
