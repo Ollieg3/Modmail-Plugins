@@ -188,6 +188,57 @@ class AddCategoryModal(discord.ui.Modal, title="📁 Add / Edit Category Option"
         await interaction.response.send_message(msg, ephemeral=True)
 
 
+# --- INTERACTIVE REMOVAL DROPDOWNS ---
+class RemoveButtonSelect(discord.ui.Select):
+    def __init__(self, cog):
+        self.cog = cog
+        options = []
+        for btn in cog.config["buttons"]:
+            options.append(discord.SelectOption(
+                label=btn["label"],
+                description=f"Runs -{btn['alias']}",
+                emoji=btn.get("emoji")
+            ))
+        super().__init__(placeholder="Select a button to remove...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        selected_label = self.values[0]
+        self.cog.config["buttons"] = [b for b in self.cog.config["buttons"] if b["label"] != selected_label]
+        save_config(self.cog.config)
+        await interaction.response.edit_message(content=f"✅ Successfully removed button **{selected_label}**.", view=None)
+
+
+class RemoveButtonView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=60)
+        self.add_item(RemoveButtonSelect(cog))
+
+
+class RemoveCategorySelect(discord.ui.Select):
+    def __init__(self, cog):
+        self.cog = cog
+        options = []
+        for cat in cog.config["categories"]:
+            options.append(discord.SelectOption(
+                label=cat["label"],
+                description=f"ID: {cat['value']}",
+                emoji=cat.get("emoji")
+            ))
+        super().__init__(placeholder="Select a category to remove...", min_values=1, max_values=1, options=options)
+
+    async def callback(self, interaction: discord.Interaction):
+        selected_label = self.values[0]
+        self.cog.config["categories"] = [c for c in self.cog.config["categories"] if c["label"] != selected_label]
+        save_config(self.cog.config)
+        await interaction.response.edit_message(content=f"✅ Successfully removed category **{selected_label}**.", view=None)
+
+
+class RemoveCategoryView(discord.ui.View):
+    def __init__(self, cog):
+        super().__init__(timeout=60)
+        self.add_item(RemoveCategorySelect(cog))
+
+
 # --- DYNAMIC BUTTON ---
 class DynamicButton(discord.ui.Button):
     def __init__(self, label: str, alias: str, style: str, emoji: str = None, row: int = 1):
@@ -436,7 +487,7 @@ class StickyPanel(commands.Cog):
                 print(f"[StickyPanel] Failed to send panel in {channel.id}: {e}")
                 self.sticky_messages.pop(channel.id, None)
 
-    # --- COMMANDS WITH MODALS ---
+    # --- COMMANDS WITH MODALS & DROPDOWNS ---
     @commands.group(name="stickypanel", invoke_without_command=True)
     @commands.has_permissions(administrator=True)
     async def stickypanel_cmd(self, ctx):
@@ -486,15 +537,11 @@ class StickyPanel(commands.Cog):
 
     @stickypanel_cmd.command(name="removebutton")
     @commands.has_permissions(administrator=True)
-    async def remove_button(self, ctx, *, label: str):
-        initial = len(self.config["buttons"])
-        self.config["buttons"] = [b for b in self.config["buttons"] if b["label"].lower() != label.lower()]
-        
-        if len(self.config["buttons"]) < initial:
-            save_config(self.config)
-            await ctx.send(f"✅ Removed button **{label}**.")
-        else:
-            await ctx.send(f"❌ Button **{label}** not found.")
+    async def remove_button(self, ctx):
+        if not self.config["buttons"]:
+            return await ctx.send("❌ There are no custom buttons configured to remove.")
+        view = RemoveButtonView(self)
+        await ctx.send("Select the button you want to remove from the dropdown below:", view=view, ephemeral=True)
 
     @stickypanel_cmd.command(name="addcategory")
     @commands.has_permissions(administrator=True)
@@ -512,15 +559,11 @@ class StickyPanel(commands.Cog):
 
     @stickypanel_cmd.command(name="removecategory")
     @commands.has_permissions(administrator=True)
-    async def remove_category(self, ctx, *, label: str):
-        initial = len(self.config["categories"])
-        self.config["categories"] = [c for c in self.config["categories"] if c["label"].lower() != label.lower()]
-        
-        if len(self.config["categories"]) < initial:
-            save_config(self.config)
-            await ctx.send(f"✅ Removed category **{label}**.")
-        else:
-            await ctx.send(f"❌ Category **{label}** not found.")
+    async def remove_category(self, ctx):
+        if not self.config["categories"]:
+            return await ctx.send("❌ There are no categories configured to remove.")
+        view = RemoveCategoryView(self)
+        await ctx.send("Select the category you want to remove from the dropdown below:", view=view, ephemeral=True)
 
     @stickypanel_cmd.command(name="clearcategories")
     @commands.has_permissions(administrator=True)
