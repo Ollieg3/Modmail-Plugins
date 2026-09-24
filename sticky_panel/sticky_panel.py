@@ -576,16 +576,13 @@ class StickyPanel(commands.Cog):
     @stickypanel_cmd.command(name="addbutton")
     @commands.has_permissions(administrator=True)
     async def add_button(self, ctx):
-        if ctx.interaction:
-            await ctx.interaction.response.send_modal(AddButtonModal(self, ctx))
-        else:
-            button = discord.ui.Button(label="Open Button Form 📝", style=discord.ButtonStyle.primary)
-            async def btn_callback(interaction: discord.Interaction):
-                await interaction.response.send_modal(AddButtonModal(self, ctx))
-            button.callback = btn_callback
-            view = discord.ui.View()
-            view.add_item(button)
-            await ctx.send("Click below to configure the action button:", view=view)
+        button = discord.ui.Button(label="Open Button Form 📝", style=discord.ButtonStyle.primary)
+        async def btn_callback(interaction: discord.Interaction):
+            await interaction.response.send_modal(AddButtonModal(self, ctx))
+        button.callback = btn_callback
+        view = discord.ui.View()
+        view.add_item(button)
+        await ctx.send("Click below to configure the action button:", view=view)
 
     @stickypanel_cmd.command(name="removebutton")
     @commands.has_permissions(administrator=True)
@@ -598,16 +595,13 @@ class StickyPanel(commands.Cog):
     @stickypanel_cmd.command(name="addcategory")
     @commands.has_permissions(administrator=True)
     async def add_category(self, ctx):
-        if ctx.interaction:
-            await ctx.interaction.response.send_modal(AddCategoryModal(self, ctx))
-        else:
-            button = discord.ui.Button(label="Open Category Form 📁", style=discord.ButtonStyle.primary)
-            async def btn_callback(interaction: discord.Interaction):
-                await interaction.response.send_modal(AddCategoryModal(self, ctx))
-            button.callback = btn_callback
-            view = discord.ui.View()
-            view.add_item(button)
-            await ctx.send("Click below to configure the category option:", view=view)
+        button = discord.ui.Button(label="Open Category Form 📁", style=discord.ButtonStyle.primary)
+        async def btn_callback(interaction: discord.Interaction):
+            await interaction.response.send_modal(AddCategoryModal(self, ctx))
+        button.callback = btn_callback
+        view = discord.ui.View()
+        view.add_item(button)
+        await ctx.send("Click below to configure the category option:", view=view)
 
     @stickypanel_cmd.command(name="removecategory")
     @commands.has_permissions(administrator=True)
