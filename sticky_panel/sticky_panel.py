@@ -12,7 +12,20 @@ class StickyPanelView(discord.ui.View):
         if not thread:
             return await interaction.response.send_message("This is not an active Modmail thread.", ephemeral=True)
         
-        await interaction.response.send_message(f"🔒 **Thread claimed by {interaction.user.mention}.**")
+        # Check if already claimed
+        if getattr(thread, "claimed", False):
+            return await interaction.response.send_message("This thread is already claimed!", ephemeral=True)
+
+        # Claim the thread using Modmail's internal thread system
+        try:
+            if hasattr(thread, "claim"):
+                await thread.claim(interaction.user)
+            else:
+                thread.claimed = True
+
+            await interaction.response.send_message(f"🔒 **Thread claimed by {interaction.user.mention}.**")
+        except Exception as e:
+            await interaction.response.send_message(f"Failed to claim thread: {e}", ephemeral=True)
 
     @discord.ui.button(label="Close Thread", style=discord.ButtonStyle.danger, custom_id="sticky_close", emoji="❌")
     async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -80,7 +93,6 @@ class StickyPanel(commands.Cog):
         if message.author.bot:
             return
 
-        # Fixed: using self.bot.threads.find(channel_id=...) instead of .get()
         thread = self.bot.threads.find(channel_id=message.channel.id)
         if thread:
             await self.resend_sticky(message.channel)
