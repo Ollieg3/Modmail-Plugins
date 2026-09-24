@@ -32,7 +32,7 @@ class StickyPanelView(discord.ui.View):
         self.bot = bot
 
     async def _invoke_alias(self, interaction: discord.Interaction, command_name: str):
-        thread = self.bot.threads.find(channel=interaction.channel)
+        thread = await self.bot.threads.find(channel=interaction.channel)
         if not thread:
             return await interaction.response.send_message("This is not an active Modmail thread.", ephemeral=True)
 
@@ -66,7 +66,7 @@ class StickyPanelView(discord.ui.View):
 
     @discord.ui.button(label="Close", style=discord.ButtonStyle.danger, custom_id="sticky_close", emoji="❌", row=1)
     async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        thread = self.bot.threads.find(channel=interaction.channel)
+        thread = await self.bot.threads.find(channel=interaction.channel)
         if not thread:
             return await interaction.response.send_message("This is not an active Modmail thread.", ephemeral=True)
 
@@ -97,6 +97,7 @@ class StickyPanel(commands.Cog):
 
         await asyncio.sleep(2)
 
+        # Delete old panel message if present
         old_msg_id = self.sticky_messages.get(channel.id)
         if old_msg_id:
             try:
@@ -105,9 +106,16 @@ class StickyPanel(commands.Cog):
             except Exception:
                 pass
 
-        view = StickyPanelView(self.bot)
-        new_msg = await channel.send(embed=self.build_panel_embed(), view=view)
-        self.sticky_messages[channel.id] = new_msg.id
+        # Safely attempt sending new sticky message
+        try:
+            view = StickyPanelView(self.bot)
+            new_msg = await channel.send(embed=self.build_panel_embed(), view=view)
+            self.sticky_messages[channel.id] = new_msg.id
+        except discord.NotFound:
+            # Channel was deleted or closed during the 2-second delay
+            self.sticky_messages.pop(channel.id, None)
+        except Exception:
+            pass
 
     @commands.Cog.listener()
     async def on_thread_ready(self, thread, account, issue, logs):
@@ -120,7 +128,7 @@ class StickyPanel(commands.Cog):
             return
 
         if message.guild:
-            thread = self.bot.threads.find(channel=message.channel)
+            thread = await self.bot.threads.find(channel=message.channel)
             if thread:
                 await self.resend_sticky(message.channel)
 
