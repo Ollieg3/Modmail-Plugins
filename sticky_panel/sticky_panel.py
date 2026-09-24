@@ -110,11 +110,16 @@ class AddButtonModal(discord.ui.Modal, title="➕ Add / Edit Action Button"):
         except ValueError:
             return await interaction.response.send_message("❌ Row number must be a digit between 1 and 4.", ephemeral=True)
 
+        current_row_count = sum(1 for b in self.cog.config["buttons"] if b.get("row", 1) == row_val)
         label_val = self.label_input.value.strip()
+        
+        existing = next((b for b in self.cog.config["buttons"] if b["label"].lower() == label_val.lower()), None)
+        if not existing and current_row_count >= 5:
+            return await interaction.response.send_message(f"❌ Row `{row_val}` already has the maximum limit of 5 buttons! Choose a different row.", ephemeral=True)
+
         alias_val = self.alias_input.value.strip().lstrip("-")
         emoji_val = self.emoji_input.value.strip() or None
 
-        existing = next((b for b in self.cog.config["buttons"] if b["label"].lower() == label_val.lower()), None)
         if existing:
             existing.update({"alias": alias_val, "style": style_val, "emoji": emoji_val, "row": row_val})
             action_type = "Updated"
@@ -274,7 +279,7 @@ class RemoveCategoryView(discord.ui.View):
         self.add_item(RemoveCategorySelect(cog, ctx))
 
 
-# --- DYNAMIC BUTTON ---
+# --- DYNAMIC BUTTON (WITH USER TRACKING FIX) ---
 class DynamicButton(discord.ui.Button):
     def __init__(self, label: str, alias: str, style: str, emoji: str = None, row: int = 1):
         btn_style = STYLE_MAP.get(style.lower(), discord.ButtonStyle.primary)
@@ -296,12 +301,13 @@ class DynamicButton(discord.ui.Button):
 
             message = interaction.message
             message.content = f"-{self.alias}"
-            message.author = interaction.user
+            message.author = interaction.user  # Actual staff member
 
             ctx = await self.view.bot.get_context(message)
+            ctx.author = interaction.user  # Ensures logging/permissions attribute correctly
 
             if ctx.command:
-                await self.view.bot.invoke(ctx)
+                await ctx.command.invoke(ctx)
                 return
 
             snippets_cog = self.view.bot.get_cog("Snippets")
@@ -353,18 +359,17 @@ class CategorySelect(discord.ui.Select):
                 status_msg += f" and running `-{alias_to_run}`..."
             await interaction.response.send_message(status_msg, ephemeral=True)
 
-            # Move command using ID
             move_msg = interaction.message
             move_msg.content = f"-move {selected_value}"
             move_msg.author = interaction.user
 
             ctx_move = await self.bot.get_context(move_msg)
+            ctx_move.author = interaction.user
             if ctx_move.command:
-                await self.bot.invoke(ctx_move)
+                await ctx_move.command.invoke(ctx_move)
             else:
                 await self.bot.process_commands(move_msg)
 
-            # Alias execution
             if alias_to_run:
                 await asyncio.sleep(0.5)
                 alias_msg = interaction.message
@@ -372,8 +377,9 @@ class CategorySelect(discord.ui.Select):
                 alias_msg.author = interaction.user
 
                 ctx_alias = await self.bot.get_context(alias_msg)
+                ctx_alias.author = interaction.user
                 if ctx_alias.command:
-                    await self.bot.invoke(ctx_alias)
+                    await ctx_alias.command.invoke(ctx_alias)
                 else:
                     snippets_cog = self.bot.get_cog("Snippets")
                     if snippets_cog:
@@ -387,7 +393,7 @@ class CategorySelect(discord.ui.Select):
             print(f"[StickyPanel] Category select error: {e}")
 
 
-# --- CLOSE CONFIRMATION VIEW ---
+# --- CLOSE CONFIRMATION VIEW (WITH USER TRACKING FIX) ---
 class ConfirmCloseView(discord.ui.View):
     def __init__(self, bot):
         super().__init__(timeout=60)
@@ -399,11 +405,13 @@ class ConfirmCloseView(discord.ui.View):
             await interaction.response.defer()
             message = interaction.message
             message.content = "-close"
-            message.author = interaction.user
+            message.author = interaction.user  # Actual staff member
             
             ctx = await self.bot.get_context(message)
+            ctx.author = interaction.user  # Ensures transcript logs the correct closer
+            
             if ctx.command:
-                await self.bot.invoke(ctx)
+                await ctx.command.invoke(ctx)
             else:
                 await interaction.followup.send("Failed to execute close command.", ephemeral=True)
         except Exception as e:
@@ -529,7 +537,7 @@ class StickyPanel(commands.Cog):
                 print(f"[StickyPanel] Failed to send panel in {channel.id}: {e}")
                 self.sticky_messages.pop(channel.id, None)
 
-    # --- COMMANDS WITH MODALS & DROPDOWNS ---
+    # --- COMMANDS ---
     @commands.group(name="stickypanel", invoke_without_command=True)
     @commands.has_permissions(administrator=True)
     async def stickypanel_cmd(self, ctx):
