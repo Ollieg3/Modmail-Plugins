@@ -100,6 +100,10 @@ class AddButtonModal(discord.ui.Modal, title="➕ Add / Edit Action Button"):
         self.ctx = ctx
 
     async def on_submit(self, interaction: discord.Interaction):
+        label_val = self.label_input.value.strip()
+        if not (1 <= len(label_val) <= 80):
+            return await interaction.response.send_message("❌ Button text label must be between 1 and 80 characters long.", ephemeral=True)
+
         style_val = self.style_input.value.strip().lower() or "blue"
         if style_val not in STYLE_MAP:
             return await interaction.response.send_message("❌ Invalid color style! Use: `blue`, `grey`, `green`, or `red`.", ephemeral=True)
@@ -112,7 +116,6 @@ class AddButtonModal(discord.ui.Modal, title="➕ Add / Edit Action Button"):
 
         cat_target = self.category_input.value.strip() or None
         current_row_count = sum(1 for b in self.cog.config["buttons"] if b.get("row", 1) == row_val and b.get("category_id") == cat_target)
-        label_val = self.label_input.value.strip()
         
         existing = next((b for b in self.cog.config["buttons"] if b["label"].lower() == label_val.lower()), None)
         if not existing and current_row_count >= 5:
