@@ -7,17 +7,12 @@ from discord.ext import commands
 CONFIG_PATH = "sticky_panel_config.json"
 
 DEFAULT_CONFIG = {
-    "enabled": True,
+    "enabled": False,  # Disabled by default
     "delay": 1.5,
     "title": "⚡ Ticket Control Panel",
-    "description": "Select an action or category below to manage this ticket.",
+    "description": "Select an action below to manage this ticket.",
     "color": 0x5865F2,  # Blurple
-    "categories": [
-        {"label": "Executive Team", "value": "Executive Team", "description": "Move ticket to Executive Team", "emoji": "👔"},
-        {"label": "Management", "value": "Management", "description": "Move ticket to Management", "emoji": "🛠️"},
-        {"label": "Appeals", "value": "Appeals", "description": "Move ticket to Appeals", "emoji": "⚖️"},
-        {"label": "General Support", "value": "General Support", "description": "Move ticket to General Support", "emoji": "💬"}
-    ]
+    "categories": []    # None by default
 }
 
 def load_config():
@@ -52,7 +47,7 @@ class CategorySelect(discord.ui.Select):
             placeholder="📁 Move thread to category...",
             min_values=1,
             max_values=1,
-            options=options if options else [discord.SelectOption(label="None", value="none")],
+            options=options,
             row=0
         )
 
@@ -62,9 +57,6 @@ class CategorySelect(discord.ui.Select):
             return await interaction.response.send_message("This is not an active Modmail thread.", ephemeral=True)
 
         selected_category = self.values[0]
-        if selected_category == "none":
-            return await interaction.response.send_message("No valid category selected.", ephemeral=True)
-
         await interaction.response.send_message(f"⌛ Moving thread to `{selected_category}`...", ephemeral=True)
 
         message = interaction.message
@@ -107,6 +99,7 @@ class StickyPanelView(discord.ui.View):
         super().__init__(timeout=None)
         self.bot = bot
 
+        # Only add dropdown if categories exist
         if config.get("categories"):
             self.add_item(CategorySelect(self.bot, config["categories"]))
 
@@ -149,10 +142,6 @@ class StickyPanelView(discord.ui.View):
     async def warn_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         await self._invoke_alias(interaction, "warn")
 
-    @discord.ui.button(label="Claim", style=discord.ButtonStyle.success, custom_id="sticky_claim", emoji="🔒", row=1)
-    async def claim_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await self._invoke_alias(interaction, "claim")
-
     # --- BUTTON ROW 2 ---
     @discord.ui.button(label="Delay", style=discord.ButtonStyle.primary, custom_id="sticky_delay", emoji="⏳", row=2)
     async def delay_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -194,7 +183,7 @@ class StickyPanel(commands.Cog):
         return embed
 
     async def resend_sticky(self, channel):
-        if not self.config.get("enabled", True):
+        if not self.config.get("enabled", False):
             return
 
         if not isinstance(channel, discord.TextChannel):
@@ -205,6 +194,7 @@ class StickyPanel(commands.Cog):
         async with lock:
             await asyncio.sleep(self.config.get("delay", 1.5))
 
+            # Delete old sticky message
             old_msg_id = self.sticky_messages.get(channel.id)
             if old_msg_id:
                 try:
@@ -213,6 +203,7 @@ class StickyPanel(commands.Cog):
                 except Exception:
                     pass
 
+            # Send new sticky message
             try:
                 view = StickyPanelView(self.bot, self.config)
                 new_msg = await channel.send(embed=self.build_panel_embed(), view=view)
@@ -229,31 +220,34 @@ class StickyPanel(commands.Cog):
         embed.add_field(name="Status", value="🟢 Enabled" if self.config.get("enabled") else "🔴 Disabled", inline=True)
         embed.add_field(name="Delay", value=f"`{self.config.get('delay')}s`", inline=True)
         embed.add_field(name="Title", value=self.config.get("title"), inline=False)
-        embed.add_field(name="Categories", value="\n".join([f"• {c['label']} -> `{c['value']}`" for c in self.config.get("categories", [])]) or "None", inline=False)
-        embed.set_footer(text="Use -stickypanel toggle, -stickypanel addcategory, or -stickypanel setdelay")
+        
+        cats = self.config.get("categories", [])
+        cats_text = "\n".join([f"• {c['label']} -> `{c['value']}`" for c in cats]) if cats else "*None configured*"
+        embed.add_field(name="Categories", value=cats_text, inline=False)
+        
+        embed.set_footer(text="Use -stickypanel enable | addcategory | removecategory")
         await ctx.send(embed=embed)
 
-    @stickypanel_cmd.command(name="toggle")
+    @stickypanel_cmd.command(name="enable")
     @commands.has_permissions(administrator=True)
-    async def toggle_panel(self, ctx):
-        """Toggles the sticky panel on or off."""
-        self.config["enabled"] = not self.config.get("enabled", True)
+    async def enable_panel(self, ctx):
+        """Enables the sticky panel plugin."""
+        self.config["enabled"] = True
         save_config(self.config)
-        status = "enabled" if self.config["enabled"] else "disabled"
-        await ctx.send(f"✅ Sticky panel is now **{status}**.")
+        await ctx.send("✅ **Sticky Panel enabled!** It will now trigger when the bot sends messages in thread channels.")
 
-    @stickypanel_cmd.command(name="setdelay")
+    @stickypanel_cmd.command(name="disable")
     @commands.has_permissions(administrator=True)
-    async def set_delay(self, ctx, seconds: float):
-        """Sets resend delay in seconds."""
-        self.config["delay"] = max(0.5, seconds)
+    async def disable_panel(self, ctx):
+        """Disables the sticky panel plugin."""
+        self.config["enabled"] = False
         save_config(self.config)
-        await ctx.send(f"✅ Resend delay set to **{self.config['delay']}s**.")
+        await ctx.send("🛑 **Sticky Panel disabled.**")
 
     @stickypanel_cmd.command(name="addcategory")
     @commands.has_permissions(administrator=True)
     async def add_category(self, ctx, label: str, value: str, emoji: str = None):
-        """Adds a new dropdown category: -stickypanel addcategory "Management" "Management" "🛠️" """
+        """Adds a dropdown category: -stickypanel addcategory "Management" "Management" "🛠️" """
         self.config["categories"].append({
             "label": label,
             "value": value,
@@ -261,7 +255,20 @@ class StickyPanel(commands.Cog):
             "emoji": emoji
         })
         save_config(self.config)
-        await ctx.send(f"✅ Added category **{label}** (`{value}`) to sticky panel dropdown.")
+        await ctx.send(f"✅ Added category **{label}** (`{value}`) to dropdown.")
+
+    @stickypanel_cmd.command(name="removecategory")
+    @commands.has_permissions(administrator=True)
+    async def remove_category(self, ctx, label: str):
+        """Removes a category by label: -stickypanel removecategory "Management" """
+        initial_count = len(self.config["categories"])
+        self.config["categories"] = [c for c in self.config["categories"] if c["label"].lower() != label.lower()]
+        
+        if len(self.config["categories"]) < initial_count:
+            save_config(self.config)
+            await ctx.send(f"✅ Removed category **{label}** from dropdown.")
+        else:
+            await ctx.send(f"❌ Category **{label}** was not found.")
 
     @stickypanel_cmd.command(name="clearcategories")
     @commands.has_permissions(administrator=True)
@@ -279,10 +286,15 @@ class StickyPanel(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        if message.author == self.bot.user and message.embeds:
-            if message.embeds[0].title == self.config.get("title"):
-                return
+        # 1. MUST BE SENT BY THE BOT
+        if message.author != self.bot.user:
+            return
 
+        # 2. DO NOT RE-TRIGGER ON THE PANEL EMBED ITSELF
+        if message.embeds and message.embeds[0].title == self.config.get("title"):
+            return
+
+        # 3. MUST BE IN A GUILD & INSIDE AN ACTIVE MODMAIL THREAD
         if message.guild:
             thread = await self.bot.threads.find(channel=message.channel)
             if thread:
