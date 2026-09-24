@@ -12,13 +12,8 @@ DEFAULT_CONFIG = {
     "title": "⚡ Ticket Control Panel",
     "description": "Select an action below to manage this ticket.",
     "color": 0x5865F2,  # Blurple
-    "categories": [],   # None by default
-    "buttons": [
-        {"label": "Greeting", "alias": "greeting", "style": "primary", "emoji": "👋", "row": 1},
-        {"label": "No Reply", "alias": "noreply", "style": "secondary", "emoji": "⏰", "row": 1},
-        {"label": "Warn", "alias": "warn", "style": "danger", "emoji": "⚠️", "row": 1},
-        {"label": "Delay", "alias": "delay", "style": "primary", "emoji": "⏳", "row": 2}
-    ]
+    "categories": [],   # Empty by default
+    "buttons": []       # Empty by default (Close button always renders last)
 }
 
 STYLE_MAP = {
@@ -33,25 +28,36 @@ STYLE_MAP = {
     "red": discord.ButtonStyle.danger,
 }
 
+# --- SAFE JSON HANDLING ---
 def load_config():
     if not os.path.exists(CONFIG_PATH):
-        with open(CONFIG_PATH, "w") as f:
-            json.dump(DEFAULT_CONFIG, f, indent=4)
+        save_config(DEFAULT_CONFIG)
         return DEFAULT_CONFIG
     try:
-        with open(CONFIG_PATH, "r") as f:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
             data = json.load(f)
-            data.setdefault("buttons", DEFAULT_CONFIG["buttons"])
+            data.setdefault("buttons", [])
             data.setdefault("categories", [])
+            data.setdefault("enabled", False)
+            data.setdefault("delay", 1.5)
+            data.setdefault("title", "⚡ Ticket Control Panel")
             return data
-    except Exception:
+    except Exception as e:
+        print(f"[StickyPanel] Config load failed ({e}). Reverting to default in-memory config.")
         return DEFAULT_CONFIG
 
 def save_config(config):
-    with open(CONFIG_PATH, "w") as f:
-        json.dump(config, f, indent=4)
+    # Atomic write to prevent file corruption if interrupted
+    tmp_path = f"{CONFIG_PATH}.tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=4)
+        os.replace(tmp_path, CONFIG_PATH)
+    except Exception as e:
+        print(f"[StickyPanel] Error saving config: {e}")
 
 
+# --- DYNAMIC BUTTON ---
 class DynamicButton(discord.ui.Button):
     def __init__(self, label: str, alias: str, style: str, emoji: str = None, row: int = 1):
         btn_style = STYLE_MAP.get(style.lower(), discord.ButtonStyle.primary)
@@ -64,32 +70,38 @@ class DynamicButton(discord.ui.Button):
         self.alias = alias
 
     async def callback(self, interaction: discord.Interaction):
-        thread = await self.view.bot.threads.find(channel=interaction.channel)
-        if not thread:
-            return await interaction.response.send_message("This is not an active Modmail thread.", ephemeral=True)
+        try:
+            thread = await self.view.bot.threads.find(channel=interaction.channel)
+            if not thread:
+                return await interaction.response.send_message("This is not an active Modmail thread.", ephemeral=True)
 
-        await interaction.response.send_message(f"⌛ Executing `-{self.alias}`...", ephemeral=True)
+            await interaction.response.send_message(f"⌛ Executing `-{self.alias}`...", ephemeral=True)
 
-        message = interaction.message
-        message.content = f"-{self.alias}"
-        message.author = interaction.user
+            message = interaction.message
+            message.content = f"-{self.alias}"
+            message.author = interaction.user
 
-        ctx = await self.view.bot.get_context(message)
+            ctx = await self.view.bot.get_context(message)
 
-        if ctx.command:
-            await self.view.bot.invoke(ctx)
-            return
-
-        snippets_cog = self.view.bot.get_cog("Snippets")
-        if snippets_cog:
-            snippet = await snippets_cog.get_snippet(self.alias)
-            if snippet:
-                await snippets_cog.send_snippet(ctx, snippet)
+            if ctx.command:
+                await self.view.bot.invoke(ctx)
                 return
 
-        await self.view.bot.process_commands(message)
+            snippets_cog = self.view.bot.get_cog("Snippets")
+            if snippets_cog:
+                snippet = await snippets_cog.get_snippet(self.alias)
+                if snippet:
+                    await snippets_cog.send_snippet(ctx, snippet)
+                    return
+
+            await self.view.bot.process_commands(message)
+        except Exception as e:
+            print(f"[StickyPanel] Error executing button action '{self.alias}': {e}")
+            if not interaction.response.is_done():
+                await interaction.response.send_message(f"❌ Failed to execute command `-{self.alias}`.", ephemeral=True)
 
 
+# --- CATEGORY DROPDOWN ---
 class CategorySelect(discord.ui.Select):
     def __init__(self, bot, categories):
         self.bot = bot
@@ -111,24 +123,28 @@ class CategorySelect(discord.ui.Select):
         )
 
     async def callback(self, interaction: discord.Interaction):
-        thread = await self.bot.threads.find(channel=interaction.channel)
-        if not thread:
-            return await interaction.response.send_message("This is not an active Modmail thread.", ephemeral=True)
+        try:
+            thread = await self.bot.threads.find(channel=interaction.channel)
+            if not thread:
+                return await interaction.response.send_message("This is not an active Modmail thread.", ephemeral=True)
 
-        selected_category = self.values[0]
-        await interaction.response.send_message(f"⌛ Moving thread to `{selected_category}`...", ephemeral=True)
+            selected_category = self.values[0]
+            await interaction.response.send_message(f"⌛ Moving thread to `{selected_category}`...", ephemeral=True)
 
-        message = interaction.message
-        message.content = f"-move {selected_category}"
-        message.author = interaction.user
+            message = interaction.message
+            message.content = f"-move {selected_category}"
+            message.author = interaction.user
 
-        ctx = await self.bot.get_context(message)
-        if ctx.command:
-            await self.bot.invoke(ctx)
-        else:
-            await self.bot.process_commands(message)
+            ctx = await self.bot.get_context(message)
+            if ctx.command:
+                await self.bot.invoke(ctx)
+            else:
+                await self.bot.process_commands(message)
+        except Exception as e:
+            print(f"[StickyPanel] Category move error: {e}")
 
 
+# --- CLOSE CONFIRMATION VIEW ---
 class ConfirmCloseView(discord.ui.View):
     def __init__(self, bot):
         super().__init__(timeout=60)
@@ -136,71 +152,87 @@ class ConfirmCloseView(discord.ui.View):
 
     @discord.ui.button(label="Yes, Close Thread", style=discord.ButtonStyle.danger, custom_id="confirm_close_yes")
     async def confirm_yes(self, interaction: discord.Interaction, button: discord.ui.Button):
-        await interaction.response.defer()
-        
-        message = interaction.message
-        message.content = "-close"
-        message.author = interaction.user
-        
-        ctx = await self.bot.get_context(message)
-        if ctx.command:
-            await self.bot.invoke(ctx)
-        else:
-            await interaction.followup.send("Failed to execute close command.", ephemeral=True)
+        try:
+            await interaction.response.defer()
+            message = interaction.message
+            message.content = "-close"
+            message.author = interaction.user
+            
+            ctx = await self.bot.get_context(message)
+            if ctx.command:
+                await self.bot.invoke(ctx)
+            else:
+                await interaction.followup.send("Failed to execute close command.", ephemeral=True)
+        except Exception as e:
+            print(f"[StickyPanel] Close execution error: {e}")
 
     @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary, custom_id="confirm_close_no")
     async def confirm_no(self, interaction: discord.Interaction, button: discord.ui.Button):
         await interaction.response.send_message("Thread closure cancelled.", ephemeral=True)
 
 
+# --- MAIN PANEL VIEW ---
 class StickyPanelView(discord.ui.View):
     def __init__(self, bot, config):
         super().__init__(timeout=None)
         self.bot = bot
 
-        # Category Dropdown (if configured)
+        # 1. Add Category Dropdown (Row 0)
         if config.get("categories"):
             try:
                 self.add_item(CategorySelect(self.bot, config["categories"]))
             except Exception as e:
-                print(f"[StickyPanel] Error loading categories: {e}")
+                print(f"[StickyPanel] Skipped invalid categories: {e}")
 
-        # Configured Action Buttons
-        for btn in config.get("buttons", []):
+        # 2. Add Dynamic Action Buttons
+        configured_buttons = config.get("buttons", [])
+        max_row_used = 1
+
+        for btn in configured_buttons:
             try:
+                btn_row = min(max(btn.get("row", 1), 1), 4) # Bound row between 1 and 4
+                if btn_row > max_row_used:
+                    max_row_used = btn_row
+                    
                 self.add_item(DynamicButton(
                     label=btn["label"],
                     alias=btn["alias"],
                     style=btn.get("style", "primary"),
                     emoji=btn.get("emoji"),
-                    row=btn.get("row", 1)
+                    row=btn_row
                 ))
             except Exception as e:
-                print(f"[StickyPanel] Error loading button '{btn.get('label')}': {e}")
+                print(f"[StickyPanel] Skipped invalid button '{btn.get('label')}': {e}")
 
-        # Close Thread Button
+        # 3. Permanent Close Thread Button (Always rendered last)
+        close_row = max_row_used if len([b for b in configured_buttons if b.get("row", 1) == max_row_used]) < 5 else min(max_row_used + 1, 4)
+        
         close_btn = discord.ui.Button(
             label="Close Thread", 
             style=discord.ButtonStyle.danger, 
             emoji="❌", 
-            row=2
+            row=close_row
         )
         close_btn.callback = self.close_callback
         self.add_item(close_btn)
 
     async def close_callback(self, interaction: discord.Interaction):
-        thread = await self.bot.threads.find(channel=interaction.channel)
-        if not thread:
-            return await interaction.response.send_message("This is not an active Modmail thread.", ephemeral=True)
+        try:
+            thread = await self.bot.threads.find(channel=interaction.channel)
+            if not thread:
+                return await interaction.response.send_message("This is not an active Modmail thread.", ephemeral=True)
 
-        view = ConfirmCloseView(self.bot)
-        await interaction.response.send_message(
-            "⚠️ **Are you sure you want to close this ticket thread?**", 
-            view=view, 
-            ephemeral=True
-        )
+            view = ConfirmCloseView(self.bot)
+            await interaction.response.send_message(
+                "⚠️ **Are you sure you want to close this ticket thread?**", 
+                view=view, 
+                ephemeral=True
+            )
+        except Exception as e:
+            print(f"[StickyPanel] Error initiating thread closure: {e}")
 
 
+# --- COG & LISTENERS ---
 class StickyPanel(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -232,24 +264,25 @@ class StickyPanel(commands.Cog):
         lock = self.get_lock(channel.id)
         
         async with lock:
+            # Wait configured delay to reduce API noise
             await asyncio.sleep(self.config.get("delay", 1.5))
 
-            # Delete old panel
+            # Delete old sticky message
             old_msg_id = self.sticky_messages.get(channel.id)
             if old_msg_id:
                 try:
                     old_msg = await channel.fetch_message(old_msg_id)
                     await old_msg.delete()
-                except Exception:
+                except (discord.NotFound, discord.HTTPException, discord.Forbidden):
                     pass
 
-            # Send new panel
+            # Send new sticky message safely
             try:
                 view = StickyPanelView(self.bot, self.config)
                 new_msg = await channel.send(embed=self.build_panel_embed(), view=view)
                 self.sticky_messages[channel.id] = new_msg.id
-            except Exception as e:
-                print(f"[StickyPanel] Error sending panel: {e}")
+            except discord.HTTPException as e:
+                print(f"[StickyPanel] Failed to send panel in {channel.id}: {e}")
                 self.sticky_messages.pop(channel.id, None)
 
     # --- COMMANDS ---
@@ -267,7 +300,7 @@ class StickyPanel(commands.Cog):
         embed.add_field(name="Categories", value=cats_text, inline=False)
         
         btns = self.config.get("buttons", [])
-        btns_text = "\n".join([f"• **{b['label']}** (`-{b['alias']}`)" for b in btns]) if btns else "*None configured*"
+        btns_text = "\n".join([f"• **{b['label']}** (`-{b['alias']}`)" for b in btns]) if btns else "*None configured (Close Thread button only)*"
         embed.add_field(name="Buttons", value=btns_text, inline=False)
 
         embed.set_footer(text="Use -stickypanel enable | addcategory | addbutton")
@@ -349,22 +382,30 @@ class StickyPanel(commands.Cog):
     # --- LISTENERS ---
     @commands.Cog.listener()
     async def on_thread_ready(self, thread, account, issue, logs):
-        if hasattr(thread, "channel") and thread.channel:
-            await self.resend_sticky(thread.channel)
+        try:
+            if hasattr(thread, "channel") and thread.channel:
+                await self.resend_sticky(thread.channel)
+        except Exception as e:
+            print(f"[StickyPanel] on_thread_ready error: {e}")
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        # Must be sent by the bot inside an active thread
-        if message.author != self.bot.user:
-            return
+        try:
+            # 1. Must be sent by the bot inside an active thread
+            if message.author != self.bot.user:
+                return
 
-        if message.embeds and message.embeds[0].title == self.config.get("title"):
-            return
+            # 2. Do not loop back on its own embed message
+            if message.embeds and message.embeds[0].title == self.config.get("title"):
+                return
 
-        if message.guild:
-            thread = await self.bot.threads.find(channel=message.channel)
-            if thread:
-                await self.resend_sticky(message.channel)
+            # 3. Re-trigger sticky loop in Modmail threads
+            if message.guild:
+                thread = await self.bot.threads.find(channel=message.channel)
+                if thread:
+                    await self.resend_sticky(message.channel)
+        except Exception as e:
+            print(f"[StickyPanel] on_message listener error: {e}")
 
 
 async def setup(bot):
