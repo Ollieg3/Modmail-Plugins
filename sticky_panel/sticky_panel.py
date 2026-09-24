@@ -12,7 +12,7 @@ DEFAULT_CONFIG = {
     "title": "⚡ Ticket Control Panel",
     "description": "Select an action below to manage this ticket.",
     "color": 0x5865F2,  # Blurple
-    "categories": []    # None by default
+    "categories": []    # Empty by default
 }
 
 def load_config():
