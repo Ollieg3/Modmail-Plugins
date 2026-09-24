@@ -633,26 +633,32 @@ class StickyPanel(commands.Cog):
         if not self.config.get("enabled", False):
             return
 
-        # Ignore if the bot is currently processing a panel update for this channel
+        # ONLY RUN FOR BOT MESSAGES: Ignores regular users and staff entirely
+        if not message.author.bot:
+            return
+
+        # Ignore if the bot is currently refreshing the panel in this channel
         if message.channel.id in self.resending_channels:
             return
 
-        # Ignore its own sticky message ID just in case
+        # Ignore its own message ID
         if message.id == self.sticky_messages.get(message.channel.id):
             return
 
-        # STRICT THREAD CHECK ONLY: verify it's an active modmail thread
-        is_thread = False
+        # STRICT MODMAIL THREAD CHECK: This guarantees it only triggers in actual active Modmail tickets
+        is_modmail_thread = False
         try:
             if hasattr(self.bot, "threads"):
                 thread = await self.bot.threads.find(channel=message.channel)
                 if thread:
-                    is_thread = True
+                    is_modmail_thread = True
         except Exception:
             pass
 
-        if is_thread:
-            await self.resend_sticky(message.channel)
+        if not is_modmail_thread:
+            return
+
+        await self.resend_sticky(message.channel)
 
 
 async def setup(bot):
