@@ -1,3 +1,4 @@
+import asyncio
 import discord
 from discord.ext import commands
 
@@ -14,7 +15,7 @@ class StickyPanelView(discord.ui.View):
 
         await interaction.response.defer()
 
-        # Build a synthetic context with yourPrefix '-' to run native claim command
+        # Build a synthetic context with your prefix '-' to run native claim command
         message = interaction.message
         message.content = "-claim"
         message.author = interaction.user
@@ -33,7 +34,7 @@ class StickyPanelView(discord.ui.View):
 
         await interaction.response.defer()
 
-        # Build a synthetic context with yourPrefix '-' to run native close command
+        # Build a synthetic context with your prefix '-' to run native close command
         message = interaction.message
         message.content = "-close"
         message.author = interaction.user
@@ -78,6 +79,9 @@ class StickyPanel(commands.Cog):
         # Strict check: Panel ONLY posts in server channels (never in user DMs)
         if not isinstance(channel, discord.TextChannel):
             return
+
+        # 2-second delay before moving the panel
+        await asyncio.sleep(2)
 
         old_msg_id = self.sticky_messages.get(channel.id)
         if old_msg_id:
