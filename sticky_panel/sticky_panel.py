@@ -624,6 +624,28 @@ class StickyPanel(commands.Cog):
         except Exception as e:
             print(f"[StickyPanel] on_thread_ready error: {e}")
 
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        if message.author.bot:
+            return
+        
+        if not isinstance(message.channel, discord.TextChannel):
+            return
+
+        if not self.config.get("enabled", False):
+            return
+
+        try:
+            thread = await self.bot.threads.find(channel=message.channel)
+            if thread:
+                # Avoid re-triggering if the message sent was the sticky panel itself
+                if message.id == self.sticky_messages.get(message.channel.id):
+                    return
+                await self.resend_sticky(message.channel)
+        except Exception as e:
+            # Fallback if bot.threads isn't available or check fails
+            pass
+
 
 async def setup(bot):
     await bot.add_cog(StickyPanel(bot))
