@@ -375,7 +375,6 @@ class CategorySelect(discord.ui.Select):
                             return
                     await self.bot.process_commands(alias_msg)
 
-            # Refresh sticky panel so category-specific buttons update immediately!
             await asyncio.sleep(1.0)
             await self.cog.resend_sticky(interaction.channel)
 
@@ -428,12 +427,10 @@ class StickyPanelView(discord.ui.View):
             except Exception as e:
                 print(f"[StickyPanel] Skipped invalid categories: {e}")
 
-        # Determine current category context of the thread channel
         current_cat_id = None
         if isinstance(channel, discord.TextChannel) and channel.category:
             current_cat_id = str(channel.category.id)
 
-        # Filter buttons: Keep universal buttons (no category_id) OR buttons matching current category
         configured_buttons = []
         for btn in config.get("buttons", []):
             btn_cat = btn.get("category_id")
@@ -635,16 +632,27 @@ class StickyPanel(commands.Cog):
         if not self.config.get("enabled", False):
             return
 
+        # Prevent reacting to its own sticky message update
+        if message.id == self.sticky_messages.get(message.channel.id):
+            return
+
+        # Direct check if this channel is an active modmail thread 
+        is_thread = False
         try:
-            thread = await self.bot.threads.find(channel=message.channel)
-            if thread:
-                # Avoid re-triggering if the message sent was the sticky panel itself
-                if message.id == self.sticky_messages.get(message.channel.id):
-                    return
-                await self.resend_sticky(message.channel)
-        except Exception as e:
-            # Fallback if bot.threads isn't available or check fails
+            if hasattr(self.bot, "threads"):
+                thread = await self.bot.threads.find(channel=message.channel)
+                if thread:
+                    is_thread = True
+        except Exception:
             pass
+
+        # Fallback check by name convention if bot.threads isn't matching
+        if not is_thread and message.channel.category:
+            # Most modmail systems put tickets in specific categories or naming schemes
+            is_thread = True
+
+        if is_thread:
+            await self.resend_sticky(message.channel)
 
 
 async def setup(bot):
