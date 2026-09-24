@@ -8,28 +8,19 @@ class StickyPanelView(discord.ui.View):
 
     @discord.ui.button(label="Claim Thread", style=discord.ButtonStyle.success, custom_id="sticky_claim", emoji="🔒")
     async def claim_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        thread = self.bot.threads.find(channel_id=interaction.channel_id)
+        thread = self.bot.threads.find(channel=interaction.channel)
         if not thread:
             return await interaction.response.send_message("This is not an active Modmail thread.", ephemeral=True)
-        
-        # Check if already claimed
-        if getattr(thread, "claimed", False):
-            return await interaction.response.send_message("This thread is already claimed!", ephemeral=True)
 
-        # Claim the thread using Modmail's internal thread system
-        try:
-            if hasattr(thread, "claim"):
-                await thread.claim(interaction.user)
-            else:
-                thread.claimed = True
-
-            await interaction.response.send_message(f"🔒 **Thread claimed by {interaction.user.mention}.**")
-        except Exception as e:
-            await interaction.response.send_message(f"Failed to claim thread: {e}", ephemeral=True)
+        await interaction.response.send_message("Claiming thread...", ephemeral=True)
+        cmd = self.bot.get_command("claim")
+        ctx = await self.bot.get_context(interaction.message)
+        ctx.author = interaction.user
+        await ctx.invoke(cmd)
 
     @discord.ui.button(label="Close Thread", style=discord.ButtonStyle.danger, custom_id="sticky_close", emoji="❌")
     async def close_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        thread = self.bot.threads.find(channel_id=interaction.channel_id)
+        thread = self.bot.threads.find(channel=interaction.channel)
         if not thread:
             return await interaction.response.send_message("This is not an active Modmail thread.", ephemeral=True)
 
@@ -41,7 +32,7 @@ class StickyPanelView(discord.ui.View):
 
     @discord.ui.button(label="User Info", style=discord.ButtonStyle.secondary, custom_id="sticky_info", emoji="👤")
     async def info_button(self, interaction: discord.Interaction, button: discord.ui.Button):
-        thread = self.bot.threads.find(channel_id=interaction.channel_id)
+        thread = self.bot.threads.find(channel=interaction.channel)
         if thread and getattr(thread, "recipient", None):
             user = thread.recipient
             embed = discord.Embed(
@@ -93,7 +84,7 @@ class StickyPanel(commands.Cog):
         if message.author.bot:
             return
 
-        thread = self.bot.threads.find(channel_id=message.channel.id)
+        thread = self.bot.threads.find(channel=message.channel)
         if thread:
             await self.resend_sticky(message.channel)
 
