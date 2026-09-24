@@ -623,20 +623,17 @@ class StickyPanel(commands.Cog):
 
     @commands.Cog.listener()
     async def on_message(self, message):
-        if message.author.bot:
-            return
-        
         if not isinstance(message.channel, discord.TextChannel):
             return
 
         if not self.config.get("enabled", False):
             return
 
-        # Prevent reacting to its own sticky message update
+        # Ignore only the sticky panel's own message ID to prevent infinite loops
         if message.id == self.sticky_messages.get(message.channel.id):
             return
 
-        # Direct check if this channel is an active modmail thread 
+        # Check if the channel is an active modmail thread
         is_thread = False
         try:
             if hasattr(self.bot, "threads"):
@@ -646,9 +643,7 @@ class StickyPanel(commands.Cog):
         except Exception:
             pass
 
-        # Fallback check by name convention if bot.threads isn't matching
         if not is_thread and message.channel.category:
-            # Most modmail systems put tickets in specific categories or naming schemes
             is_thread = True
 
         if is_thread:
