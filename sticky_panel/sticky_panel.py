@@ -127,9 +127,8 @@ class AddButtonModal(discord.ui.Modal, title="➕ Add / Edit Action Button"):
             action_type = "Added"
 
         save_config(self.cog.config)
-        await interaction.response.defer() # Acknowledge modal silently
+        await interaction.response.defer()
         
-        # Send non-ephemeral message via context
         await self.ctx.send(
             f"✅ Successfully **{action_type}** button!\n"
             f"• **Label:** {emoji_val or ''} {label_val}\n"
@@ -538,7 +537,45 @@ class StickyPanel(commands.Cog):
         btns_text = "\n".join([f"• **{b['label']}** (`-{b['alias']}`)" for b in btns]) if btns else "*None configured (Close Thread button only)*"
         embed.add_field(name="Buttons", value=btns_text, inline=False)
 
-        embed.set_footer(text="Use -stickypanel enable | addcategory | addbutton")
+        embed.set_footer(text="Use -stickypanel help for a full list of commands.")
+        await ctx.send(embed=embed)
+
+    @stickypanel_cmd.command(name="help")
+    @commands.has_permissions(administrator=True)
+    async def panel_help(self, ctx):
+        embed = discord.Embed(
+            title="📖 Sticky Panel Help & Commands",
+            description="Manage your automated ticket control panels easily using the commands below:",
+            color=discord.Color.blue()
+        )
+        embed.add_field(
+            name="⚙️ General Control",
+            value=(
+                "• `-stickypanel` - View current configuration status.\n"
+                "• `-stickypanel enable` - Enable the automatic sticky panel in threads.\n"
+                "• `-stickypanel disable` - Disable the sticky panel.\n"
+                "• `-stickypanel help` - Show this help menu."
+            ),
+            inline=False
+        )
+        embed.add_field(
+            name="➕ Additions (Opens Interactive Forms)",
+            value=(
+                "• `-stickypanel addbutton` - Open a form to add/edit a custom action button.\n"
+                "• `-stickypanel addcategory` - Open a form to add/edit a dropdown category option."
+            ),
+            inline=False
+        )
+        embed.add_field(
+            name="🗑️ Removals (Interactive Dropdowns)",
+            value=(
+                "• `-stickypanel removebutton` - Select an existing button to delete.\n"
+                "• `-stickypanel removecategory` - Select an existing category to delete.\n"
+                "• `-stickypanel clearcategories` - Wipe all configured categories instantly."
+            ),
+            inline=False
+        )
+        embed.set_footer(text="Sticky Panel System • Requires Administrator Permissions")
         await ctx.send(embed=embed)
 
     @stickypanel_cmd.command(name="enable")
