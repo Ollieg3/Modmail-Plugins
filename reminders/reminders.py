@@ -68,7 +68,6 @@ class Reminders(commands.Cog):
 
             for rem in due_reminders:
                 try:
-                    # 1. Try sending notification in the original ticket channel
                     channel = self.bot.get_channel(rem["channel_id"])
                     if not channel:
                         try:
@@ -76,14 +75,15 @@ class Reminders(commands.Cog):
                         except Exception:
                             channel = None
                     
-                    user = self.bot.get_user(rem["user_id"])
+                    target_user_id = rem.get("target_user_id", rem["user_id"])
+                    user = self.bot.get_user(target_user_id)
                     if not user:
                         try:
-                            user = await self.bot.fetch_user(rem["user_id"])
+                            user = await self.bot.fetch_user(target_user_id)
                         except Exception:
                             user = None
 
-                    mention = user.mention if user else f"<@ID:{rem['user_id']}>"
+                    mention = user.mention if user else f"<@ID:{target_user_id}>"
 
                     embed = discord.Embed(
                         title="⏰ Reminder Triggered",
@@ -93,16 +93,14 @@ class Reminders(commands.Cog):
                     )
                     embed.set_footer(text=f"Requested by {rem['user_name']}")
 
-                    # Send to ticket channel if accessible
                     if channel:
-                        await channel.send(content=f"🔔 {mention}, here is your reminder for this ticket:", embed=embed)
+                        await channel.send(content=f"🔔 {mention}, here is a reminder for this ticket:", embed=embed)
 
-                    # Send a Direct Message (DM) to the user
                     if user:
                         try:
                             dm_embed = discord.Embed(
                                 title="⏰ Reminder Alert (Ticket)",
-                                description=f"You had a reminder set:\n\n> {rem['message']}",
+                                description=f"You have a reminder from **{rem['user_name']}**:\n\n> {rem['message']}",
                                 color=discord.Color.gold(),
                                 timestamp=datetime.fromtimestamp(rem["timestamp"], tz=timezone.utc)
                             )
@@ -112,8 +110,7 @@ class Reminders(commands.Cog):
                             
                             await user.send(embed=dm_embed)
                         except discord.Forbidden:
-                            # User has DMs disabled
-                            print(f"[Reminders] Could not DM user {rem['user_id']} (DMs closed).")
+                            print(f"[Reminders] Could not DM user {target_user_id} (DMs closed).")
 
                 except Exception as e:
                     print(f"[Reminders] Failed to deliver reminder {rem.get('id')}: {e}")
@@ -124,18 +121,48 @@ class Reminders(commands.Cog):
 
     # --- COMMANDS ---
     @commands.command(name="remind", aliases=["reminder"])
-    async def remind_cmd(self, ctx, time_str: str = None, *, message: str = None):
+    async def remind_cmd(self, ctx):
         """
-        Sets a reminder in the current channel/ticket.
+        Sets a reminder for yourself or another user.
         Usage: -remind 30m Check back on logs
-        Usage: -remind 1h30m Call customer back
+        Usage: -remind @User 1h Take over this ticket
         """
-        if not time_str or not message:
-            return await ctx.send("❌ **Usage:** `-remind <time> <message>`\n*Example:* `-remind 45m Check customer status` (Valid suffixes: `d`, `h`, `m`, `s`)")
+        args = ctx.message.content.split()[1:]
+
+        if not args:
+            return await ctx.send(
+                "❌ **Usage:**\n"
+                "• Remind yourself: `-remind <time> <message>` (e.g. `-remind 30m Check logs`)\n"
+                "• Remind someone else: `-remind @user <time> <message>` (e.g. `-remind @Alex 1h Follow up`)"
+            )
+
+        target_user = ctx.author
+        time_str = None
+        message = None
+
+        # Check if first argument is a user mention (<@123456789> or <@!123456789>)
+        user_match = re.match(r"<@!?(\d+)>", args[0])
+
+        if user_match:
+            # Format: -remind @user <time> <message>
+            if len(args) < 3:
+                return await ctx.send("❌ **Usage:** `-remind @user <time> <message>`\n*Example:* `-remind @Alex 45m Check customer status`")
+            
+            target_user_id = int(user_match.group(1))
+            target_user = ctx.guild.get_member(target_user_id) or await self.bot.fetch_user(target_user_id)
+            time_str = args[1]
+            message = " ".join(args[2:])
+        else:
+            # Format: -remind <time> <message>
+            if len(args) < 2:
+                return await ctx.send("❌ **Usage:** `-remind <time> <message>`\n*Example:* `-remind 45m Check customer status`")
+            
+            time_str = args[0]
+            message = " ".join(args[1:])
 
         seconds = parse_time_to_seconds(time_str)
         if seconds <= 0:
-            return await ctx.send("❌ Invalid time format! Use combinations of days/hours/minutes/seconds. *Example:* `1h30m`, `45m`, `10s`.")
+            return await ctx.send("❌ Invalid time format! Use combinations of days/hours/minutes/seconds. *Examples:* `1h30m`, `45m`, `10s`.")
 
         if seconds > 30 * 86400:
             return await ctx.send("❌ Maximum reminder duration is 30 days.")
@@ -147,6 +174,7 @@ class Reminders(commands.Cog):
             "id": reminder_id,
             "user_id": ctx.author.id,
             "user_name": str(ctx.author),
+            "target_user_id": target_user.id,
             "channel_id": ctx.channel.id,
             "message": message,
             "timestamp": target_timestamp
@@ -155,11 +183,14 @@ class Reminders(commands.Cog):
         self.reminders.append(new_reminder)
         save_reminders(self.reminders)
 
-        await ctx.send(f"✅ Reminder set! I'll ping you here and send you a DM in **{time_str}** for: *{message}* (ID: `{reminder_id}`)")
+        if target_user.id == ctx.author.id:
+            await ctx.send(f"✅ Reminder set! I'll remind you in **{time_str}** for: *{message}* (ID: `{reminder_id}`)")
+        else:
+            await ctx.send(f"✅ Reminder set! I'll remind **{target_user.mention}** in **{time_str}** for: *{message}* (ID: `{reminder_id}`)")
 
     @commands.command(name="reminders", aliases=["listreminders"])
     async def list_reminders(self, ctx):
-        """Lists active reminders set in this channel or by you."""
+        """Lists active reminders set in this channel."""
         channel_reminders = [r for r in self.reminders if r["channel_id"] == ctx.channel.id]
         
         if not channel_reminders:
@@ -172,9 +203,14 @@ class Reminders(commands.Cog):
                 time_left = 0
             
             td = timedelta(seconds=time_left)
+            target_name = "Self"
+            if rem.get("target_user_id") and rem["target_user_id"] != rem["user_id"]:
+                t_user = self.bot.get_user(rem["target_user_id"])
+                target_name = str(t_user) if t_user else f"ID: {rem['target_user_id']}"
+
             embed.add_field(
                 name=f"ID: `{rem['id']}` (Set by {rem['user_name']})",
-                value=f"• **Message:** {rem['message']}\n• **Due in:** ~{td}",
+                value=f"• **For:** {target_name}\n• **Message:** {rem['message']}\n• **Due in:** ~{td}",
                 inline=False
             )
 
@@ -195,4 +231,3 @@ class Reminders(commands.Cog):
 
 async def setup(bot):
     await bot.add_cog(Reminders(bot))
-
