@@ -7,6 +7,7 @@ A lightweight, feature-rich reminder plugin for Discord Modmail bots that allows
 ---
 
 ## Features
+* **UK Timezone Aware:** Operates in UK time (`Europe/London`), automatically adjusting for **GMT** and **BST** (British Summer Time) daylight saving transitions.
 * **Natural Language & Relative Time:** Supports traditional relative durations (`30m`, `2h`, `1d`) as well as human-readable dates and times (`tomorrow 3pm`, `next Tuesday 4pm`).
 * **Staff Delegation:** Easily set reminders for yourself or assign follow-ups to another team member by mentioning them (`-remind @user <time> <message>`).
 * **Dual Delivery Alerts:** Automatically dispatches an alert ping inside the ticket channel *and* a direct message (DM) to the target user when the timer expires.
@@ -17,8 +18,8 @@ A lightweight, feature-rich reminder plugin for Discord Modmail bots that allows
 
 ## Commands
 
-* **`-remind <time> <message>`** — Set a reminder for yourself (e.g., `-remind 30m Check logs`).
-* **`-remind @user <time> <message>`** — Set a reminder for another staff member (e.g., `-remind @Alex tomorrow 3pm Follow up`).
+* **`-remind <time> <message>`** — Set a reminder for yourself (e.g., `-remind 30m Check logs` or `-remind tomorrow 3pm Follow up`).
+* **`-remind @user <time> <message>`** — Set a reminder for another staff member (e.g., `-remind @Alex next Tuesday 4pm Training`).
 * **`-reminders`** — View active reminders set in the current channel.
 * **`-delremind <id>`** — Cancel a pending reminder using its ID.
 
@@ -28,4 +29,3 @@ A lightweight, feature-rich reminder plugin for Discord Modmail bots that allows
 
 ```text
 ?plugins add Ollieg3/Modmail-Plugins/reminders
-
