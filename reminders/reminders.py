@@ -3,12 +3,14 @@ import json
 import os
 import re
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 import discord
 from discord.ext import commands, tasks
 
 REMINDERS_PATH = "reminders.json"
+UK_TZ = ZoneInfo("Europe/London")
 
-# --- BUILT-IN NATURAL DATE & TIME PARSER ---
+# --- BUILT-IN NATURAL DATE & TIME PARSER (UK TIME) ---
 WEEKDAYS = {
     "monday": 0, "mon": 0,
     "tuesday": 1, "tue": 1, "tues": 1,
@@ -47,24 +49,20 @@ def parse_time_of_day(time_token: str):
 
 def parse_datetime_query(args):
     """
-    Parses arguments into (target_datetime, consumed_token_count).
-    Supports:
-      - 30m / 2h30m / 1d
-      - tomorrow 3pm / tomorrow 15:00
-      - next Tuesday 4pm / Tuesday 4pm
-      - Friday 2pm
+    Parses arguments into (target_datetime, consumed_token_count) relative to UK time.
     """
     if not args:
         return None, 0
 
-    now = datetime.now(timezone.utc)
+    now_uk = datetime.now(UK_TZ)
 
     # 1. Standard relative durations (30m, 1h, 1d)
     rel_seconds = parse_relative_time(args[0])
     if rel_seconds > 0:
-        return now + timedelta(seconds=rel_seconds), 1
+        # Relative durations from right now
+        return datetime.now(timezone.utc) + timedelta(seconds=rel_seconds), 1
 
-    # 2. Multi-word date & time phrases
+    # 2. Multi-word date & time phrases interpreted in UK local time
     day_token = args[0].lower()
     time_token = args[1].lower() if len(args) > 1 else None
 
@@ -73,45 +71,47 @@ def parse_datetime_query(args):
         target_weekday = WEEKDAYS[args[1].lower()]
         time_token = args[2].lower() if len(args) > 2 else None
         
-        days_ahead = (target_weekday - now.weekday()) % 7
+        days_ahead = (target_weekday - now_uk.weekday()) % 7
         if days_ahead == 0:
             days_ahead = 7
         
-        target_date = now.date() + timedelta(days=days_ahead)
+        target_date = now_uk.date() + timedelta(days=days_ahead)
         parsed_time = parse_time_of_day(time_token) if time_token else (9, 0)
         consumed = 3 if (time_token and parse_time_of_day(time_token)) else 2
         
-        target_dt = datetime.combine(target_date, datetime.min.time()).replace(
-            hour=parsed_time[0], minute=parsed_time[1], tzinfo=timezone.utc
+        target_dt_naive = datetime.combine(target_date, datetime.min.time()).replace(
+            hour=parsed_time[0], minute=parsed_time[1]
         )
-        return target_dt, consumed
+        target_dt_uk = target_dt_naive.replace(tzinfo=UK_TZ)
+        return target_dt_uk.astimezone(timezone.utc), consumed
 
     # Handle "today", "tomorrow", or single "<weekday>"
     target_date = None
     if day_token == "today":
-        target_date = now.date()
+        target_date = now_uk.date()
     elif day_token in ("tomorrow", "tmr", "tmw"):
-        target_date = now.date() + timedelta(days=1)
+        target_date = now_uk.date() + timedelta(days=1)
     elif day_token in WEEKDAYS:
         target_weekday = WEEKDAYS[day_token]
-        days_ahead = (target_weekday - now.weekday()) % 7
+        days_ahead = (target_weekday - now_uk.weekday()) % 7
         if days_ahead <= 0:
             days_ahead += 7
-        target_date = now.date() + timedelta(days=days_ahead)
+        target_date = now_uk.date() + timedelta(days=days_ahead)
 
     if target_date:
         parsed_time = parse_time_of_day(time_token) if time_token else None
         if parsed_time:
-            target_dt = datetime.combine(target_date, datetime.min.time()).replace(
-                hour=parsed_time[0], minute=parsed_time[1], tzinfo=timezone.utc
+            target_dt_naive = datetime.combine(target_date, datetime.min.time()).replace(
+                hour=parsed_time[0], minute=parsed_time[1]
             )
-            return target_dt, 2
+            target_dt_uk = target_dt_naive.replace(tzinfo=UK_TZ)
+            return target_dt_uk.astimezone(timezone.utc), 2
         else:
-            # Default to 9:00 AM if no time is specified
-            target_dt = datetime.combine(target_date, datetime.min.time()).replace(
-                hour=9, minute=0, tzinfo=timezone.utc
+            target_dt_naive = datetime.combine(target_date, datetime.min.time()).replace(
+                hour=9, minute=0
             )
-            return target_dt, 1
+            target_dt_uk = target_dt_naive.replace(tzinfo=UK_TZ)
+            return target_dt_uk.astimezone(timezone.utc), 1
 
     return None, 0
 
@@ -221,7 +221,7 @@ class Reminders(commands.Cog):
     @commands.command(name="remind", aliases=["reminder"])
     async def remind_cmd(self, ctx):
         """
-        Sets a reminder for yourself or another staff member.
+        Sets a reminder for yourself or another staff member using UK time.
         Usage:
           -remind 30m Check logs
           -remind tomorrow 3pm Follow up with customer
@@ -239,7 +239,6 @@ class Reminders(commands.Cog):
 
         target_user = ctx.author
 
-        # Check for user mention at the beginning
         user_match = re.match(r"<@!?(\d+)>", args[0])
         if user_match:
             target_user_id = int(user_match.group(1))
@@ -249,24 +248,23 @@ class Reminders(commands.Cog):
         if not args:
             return await ctx.send("❌ Please specify a time and message.")
 
-        # Parse date/time query
-        target_dt, consumed_tokens = parse_datetime_query(args)
+        target_utc_dt, consumed_tokens = parse_datetime_query(args)
 
-        if not target_dt or consumed_tokens == 0:
+        if not target_utc_dt or consumed_tokens == 0:
             return await ctx.send("❌ Could not understand that time format. Try formats like `30m`, `tomorrow 3pm`, `Tuesday 4pm`, or `next Friday 2pm`.")
 
         message = " ".join(args[consumed_tokens:])
         if not message:
             return await ctx.send("❌ Please include a reminder message.")
 
-        now = datetime.now(timezone.utc)
-        if target_dt <= now:
+        now_utc = datetime.now(timezone.utc)
+        if target_utc_dt <= now_utc:
             return await ctx.send("❌ That time is in the past! Please specify a future time.")
 
-        if (target_dt - now).total_seconds() > (30 * 86400):
+        if (target_utc_dt - now_utc).total_seconds() > (30 * 86400):
             return await ctx.send("❌ Maximum reminder duration is 30 days.")
 
-        reminder_id = str(int(now.timestamp() * 1000))[-6:]
+        reminder_id = str(int(now_utc.timestamp() * 1000))[-6:]
 
         new_reminder = {
             "id": reminder_id,
@@ -275,13 +273,16 @@ class Reminders(commands.Cog):
             "target_user_id": target_user.id,
             "channel_id": ctx.channel.id,
             "message": message,
-            "timestamp": target_dt.timestamp()
+            "timestamp": target_utc_dt.timestamp()
         }
 
         self.reminders.append(new_reminder)
         save_reminders(self.reminders)
 
-        formatted_time = target_dt.strftime("%b %d at %H:%M UTC")
+        # Format display time cleanly in UK local time (automatically shows GMT or BST)
+        uk_display_dt = target_utc_dt.astimezone(UK_TZ)
+        formatted_time = uk_display_dt.strftime("%b %d at %H:%M %Z")
+
         if target_user.id == ctx.author.id:
             await ctx.send(f"✅ Reminder set for **{formatted_time}**! (*{message}*) (ID: `{reminder_id}`)")
         else:
@@ -297,8 +298,9 @@ class Reminders(commands.Cog):
 
         embed = discord.Embed(title="⏰ Active Reminders in this Channel", color=discord.Color.blue())
         for rem in channel_reminders:
-            due_dt = datetime.fromtimestamp(rem["timestamp"], tz=timezone.utc)
-            time_str = due_dt.strftime("%b %d, %H:%M UTC")
+            due_dt_utc = datetime.fromtimestamp(rem["timestamp"], tz=timezone.utc)
+            due_dt_uk = due_dt_utc.astimezone(UK_TZ)
+            time_str = due_dt_uk.strftime("%b %d, %H:%M %Z")
             
             target_name = "Self"
             if rem.get("target_user_id") and rem["target_user_id"] != rem["user_id"]:
