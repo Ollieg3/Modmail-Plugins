@@ -9,10 +9,6 @@ class HideTicketCreator(commands.Cog):
 
     @commands.Cog.listener()
     async def on_thread_ready(self, thread, account, issue, logs):
-        """
-        Triggered when a Modmail/ticket thread is fully initialized.
-        Automatically applies a channel overwrite to hide the ticket author.
-        """
         if not self.enabled:
             return
 
@@ -21,48 +17,33 @@ class HideTicketCreator(commands.Cog):
             if not channel or not isinstance(channel, discord.TextChannel):
                 return
 
-            # Give Discord a split second to finish channel setup/syncing
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1.0)
 
-            # Ensure we have the user object for the ticket creator
             if account and isinstance(account, (discord.User, discord.Member)):
-                # Explicit channel override denies viewing/reading, overriding role/category perms
-                await channel.set_permissions(
-                    account,
-                    read_messages=False,
+                # If they are a member in the guild, pull their Member object
+                member = channel.guild.get_member(account.id) or account
+
+                # Skip hiding if they are a server Administrator (Discord won't hide anyway)
+                if isinstance(member, discord.Member) and member.guild_permissions.administrator:
+                    print(f"[HideCreator] Skipped {member} - User has Administrator permissions.")
+                    return
+
+                # Strict overwrite stripping view, history, and message rights
+                overwrite = discord.PermissionOverwrite(
                     view_channel=False,
+                    read_messages=False,
+                    send_messages=False,
+                    read_message_history=False
+                )
+
+                await channel.set_permissions(
+                    member,
+                    overwrite=overwrite,
                     reason="Support server policy: Automatic ticket concealment from creator."
                 )
-                print(f"[HideCreator] Successfully hid user {account} ({account.id}) from ticket channel #{channel.name}")
+                print(f"[HideCreator] Hard-blocked user {member} from #{channel.name}")
         except Exception as e:
             print(f"[HideCreator] Error hiding ticket creator: {e}")
-
-    @commands.group(name="hidecreator", invoke_without_command=True)
-    @commands.has_permissions(administrator=True)
-    async def hidecreator_cmd(self, ctx):
-        """Check the status of the ticket creator hider."""
-        status = "🟢 Enabled" if self.enabled else "🔴 Disabled"
-        embed = discord.Embed(
-            title="🔒 Ticket Creator Hider Settings",
-            description=f"**Status:** {status}\n\nWhen enabled, any newly created ticket will automatically deny read/view permissions to the ticket author.",
-            color=discord.Color.blurple()
-        )
-        await ctx.send(embed=embed)
-
-    @hidecreator_cmd.command(name="enable")
-    @commands.has_permissions(administrator=True)
-    async def enable_hider(self, ctx):
-        """Enable automatic ticket creator hiding."""
-        self.enabled = True
-        await ctx.send("✅ **Ticket Creator Hider has been enabled.**")
-
-    @hidecreator_cmd.command(name="disable")
-    @commands.has_permissions(administrator=True)
-    async def disable_hider(self, ctx):
-        """Disable automatic ticket creator hiding."""
-        self.enabled = False
-        await ctx.send("🛑 **Ticket Creator Hider has been disabled.**")
-
 
 async def setup(bot):
     await bot.add_cog(HideTicketCreator(bot))
