@@ -113,17 +113,21 @@ class ModmailCategorySelect(discord.ui.Select):
 
     async def callback(self, interaction: discord.Interaction):
         if self.values[0] == "__none__":
-            return await interaction.response.send_message(
+            await interaction.response.send_message(
                 "⚠️ No support categories are configured yet.", ephemeral=True
             )
+            await self.cog.reset_panel_selection(interaction.message)
+            return
 
         try:
             idx = int(self.values[0])
             cat = self.cog.config["categories"][idx]
         except (ValueError, IndexError, KeyError):
-            return await interaction.response.send_message(
+            await interaction.response.send_message(
                 "⚠️ That support option is no longer valid.", ephemeral=True
             )
+            await self.cog.reset_panel_selection(interaction.message)
+            return
 
         await interaction.response.defer(ephemeral=True)
 
@@ -135,6 +139,7 @@ class ModmailCategorySelect(discord.ui.Select):
 
         # 0. Block if the user already has an open Modmail thread (no DM, no alias re-run)
         if not hasattr(bot, "threads"):
+            await self.cog.reset_panel_selection(interaction.message)
             return await interaction.followup.send(
                 "❌ Modmail threads manager not found on bot.", ephemeral=True
             )
@@ -146,6 +151,7 @@ class ModmailCategorySelect(discord.ui.Select):
             existing_thread = None
 
         if existing_thread:
+            await self.cog.reset_panel_selection(interaction.message)
             return await interaction.followup.send(
                 "⚠️ You already have an open support ticket. Please use your existing ticket instead of opening another one.",
                 ephemeral=True,
@@ -165,11 +171,13 @@ class ModmailCategorySelect(discord.ui.Select):
                 )
             )
         except discord.Forbidden:
+            await self.cog.reset_panel_selection(interaction.message)
             return await interaction.followup.send(
                 "❌ I couldn't send you a DM. Please **open your DMs** and **try again**.",
                 ephemeral=True,
             )
         except discord.HTTPException:
+            await self.cog.reset_panel_selection(interaction.message)
             return await interaction.followup.send(
                 "⚠️ Couldn't verify your DMs right now. Please make sure your DMs are open and try again.",
                 ephemeral=True,
@@ -211,6 +219,7 @@ class ModmailCategorySelect(discord.ui.Select):
                     pass
 
         if not thread or not getattr(thread, "channel", None):
+            await self.cog.reset_panel_selection(interaction.message)
             return await interaction.followup.send(
                 "❌ Failed to open your ticket thread. Please try again or contact staff.",
                 ephemeral=True,
@@ -229,7 +238,8 @@ class ModmailCategorySelect(discord.ui.Select):
                 raw_alias=alias_cmd,
             )
 
-        # 4. Tell the user to check their DMs
+        # 4. Reset dropdown state and tell the user to check their DMs
+        await self.cog.reset_panel_selection(interaction.message)
         await interaction.followup.send(
             f"✅ Your **{label}** ticket is open! **Please check your DMs.**",
             ephemeral=True,
@@ -256,6 +266,15 @@ class ModmailSupportPanel(commands.Cog):
         self.view.stop()
         self.view = ModmailSupportView(self)
         self.bot.add_view(self.view)
+
+    async def reset_panel_selection(self, message: Optional[discord.Message]):
+        """Rebuilds the persistent view and edits the panel message so the same option can be selected again."""
+        self.rebuild_view()
+        if message:
+            try:
+                await message.edit(view=self.view)
+            except discord.HTTPException:
+                pass
 
     @asynccontextmanager
     async def bypass_confirm_thread_creation(self):
@@ -346,7 +365,6 @@ class ModmailSupportPanel(commands.Cog):
             return
 
         try:
-            # Build a real Message in the target thread channel so get_context / process_commands resolves `channel`
             anchor_msg = interaction.message
             if anchor_msg is None:
                 async for m in channel.history(limit=1):
