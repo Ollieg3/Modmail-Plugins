@@ -131,6 +131,25 @@ class ModmailCategorySelect(discord.ui.Select):
         label = cat.get("label", "Support")
         alias_cmd = (cat.get("alias") or "").strip()
         target_cat_id = (cat.get("category_id") or "").strip() or None
+        bot = self.cog.bot
+
+        # 0. Block if the user already has an open Modmail thread (no DM, no alias re-run)
+        if not hasattr(bot, "threads"):
+            return await interaction.followup.send(
+                "❌ Modmail threads manager not found on bot.", ephemeral=True
+            )
+
+        try:
+            existing_thread = await bot.threads.find(recipient=user)
+        except Exception as e:
+            print(f"[SupportPanel] Failed checking existing thread for {user}: {e}")
+            existing_thread = None
+
+        if existing_thread:
+            return await interaction.followup.send(
+                "⚠️ You already have an open support ticket. Please use your existing ticket instead of opening another one.",
+                ephemeral=True,
+            )
 
         # 1. Verify DMs are open before creating a Modmail thread
         try:
@@ -157,35 +176,25 @@ class ModmailCategorySelect(discord.ui.Select):
             )
 
         # 2. Open a normal user-initiated Modmail thread
-        bot = self.cog.bot
-        if not hasattr(bot, "threads"):
-            return await interaction.followup.send(
-                "❌ Modmail threads manager not found on bot.", ephemeral=True
-            )
-
         thread = None
         try:
-            existing_thread = await bot.threads.find(recipient=user)
-            if existing_thread:
-                thread = existing_thread
-            else:
-                create_kwargs = {}
-                if target_cat_id and getattr(bot, "modmail_guild", None):
-                    cat_channel = (
-                        bot.modmail_guild.get_channel(int(target_cat_id))
-                        if target_cat_id.isdigit()
-                        else None
-                    )
-                    if isinstance(cat_channel, discord.CategoryChannel):
-                        create_kwargs["category"] = cat_channel
+            create_kwargs = {}
+            if target_cat_id and getattr(bot, "modmail_guild", None):
+                cat_channel = (
+                    bot.modmail_guild.get_channel(int(target_cat_id))
+                    if target_cat_id.isdigit()
+                    else None
+                )
+                if isinstance(cat_channel, discord.CategoryChannel):
+                    create_kwargs["category"] = cat_channel
 
-                async with self.cog.bypass_confirm_thread_creation():
-                    created = await bot.threads.create(
-                        recipient=user,
-                        **create_kwargs,
-                    )
-                    if created and getattr(created, "channel", None):
-                        thread = created
+            async with self.cog.bypass_confirm_thread_creation():
+                created = await bot.threads.create(
+                    recipient=user,
+                    **create_kwargs,
+                )
+                if created and getattr(created, "channel", None):
+                    thread = created
         except Exception as e:
             print(f"[SupportPanel] Exception during threads.create for {user}: {e}")
 
@@ -351,7 +360,6 @@ class ModmailSupportPanel(commands.Cog):
                 alias_msg.content = command_text
                 alias_msg.author = interaction.user
             else:
-                me = channel.guild.me
                 alias_msg = discord.Message(
                     state=self.bot._connection,
                     channel=channel,
