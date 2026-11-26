@@ -10,6 +10,20 @@ import discord
 from discord.ext import commands
 from discord.ext.commands.view import StringView
 
+try:
+    from core import checks
+    from core.models import PermissionLevel
+except ImportError:
+    checks = None
+    PermissionLevel = None
+
+
+def owner_only():
+    """Uses Modmail's native PermissionLevel.OWNER check."""
+    if checks is not None and PermissionLevel is not None:
+        return checks.has_permissions(PermissionLevel.OWNER)
+    return commands.is_owner()
+
 
 CONFIG_PATH = "support_panel_config.json"
 DEFAULT_COLOR = 0x5865F2
@@ -86,7 +100,7 @@ class ModmailCategorySelect(discord.ui.Select):
                 discord.SelectOption(
                     label="No categories configured",
                     value="__none__",
-                    description="An admin needs to run supportsetup first.",
+                    description="A bot owner needs to run supportsetup first.",
                 )
             )
 
@@ -144,13 +158,14 @@ class ModmailCategorySelect(discord.ui.Select):
                 ephemeral=True,
             )
 
-        # 2. Open a normal user-initiated Modmail thread (no `creator=` so it does not show "Self contacted")
+        # 2. Open a normal user-initiated Modmail thread
         bot = self.cog.bot
         if not hasattr(bot, "threads"):
             return await interaction.followup.send(
                 "❌ Modmail threads manager not found on bot.", ephemeral=True
             )
 
+        thread = None
         try:
             existing_thread = await bot.threads.find(recipient=user)
             if existing_thread:
@@ -167,31 +182,40 @@ class ModmailCategorySelect(discord.ui.Select):
                         create_kwargs["category"] = cat_channel
 
                 async with self.cog.bypass_confirm_thread_creation():
-                    thread = await bot.threads.create(
+                    created = await bot.threads.create(
                         recipient=user,
                         **create_kwargs,
                     )
+                    if created and getattr(created, "channel", None):
+                        thread = created
         except Exception as e:
-            print(f"[SupportPanel] Failed to create thread for {user}: {e}")
+            print(f"[SupportPanel] Exception during threads.create for {user}: {e}")
+
+        # Poll briefly while Modmail finishes creating the thread channel
+        if not thread or not getattr(thread, "channel", None):
+            for _ in range(15):
+                await asyncio.sleep(0.4)
+                try:
+                    found = await bot.threads.find(recipient=user)
+                    if found and getattr(found, "channel", None):
+                        thread = found
+                        break
+                except Exception:
+                    pass
+
+        if not thread or not getattr(thread, "channel", None):
             return await interaction.followup.send(
                 "❌ Failed to open your ticket thread. Please try again or contact staff.",
                 ephemeral=True,
             )
 
-        if not thread or not getattr(thread, "channel", None):
-            return await interaction.followup.send(
-                "❌ Ticket thread could not be created. Please try again.",
-                ephemeral=True,
-            )
-
-        await asyncio.sleep(0.8)
+        await asyncio.sleep(1.0)
 
         # 3. Auto-run configured alias / command / snippet in the thread channel
         if alias_cmd:
-            member = interaction.guild.get_member(user.id) if interaction.guild else user
             await self.cog.run_in_thread(
                 channel=thread.channel,
-                member=member or user,
+                member=user,
                 category_label=label,
                 raw_alias=alias_cmd,
             )
@@ -279,6 +303,54 @@ class ModmailSupportPanel(commands.Cog):
             pass
         return getattr(self.bot, "prefix", "-") or "-"
 
+    def _resolve_modmail_alias(self, cmd_name: str, arg_str: str, prefix: str) -> Optional[str]:
+        aliases_map = None
+        if isinstance(getattr(self.bot, "aliases", None), dict):
+            aliases_map = self.bot.aliases
+        elif isinstance(getattr(self.bot, "config", None), dict) and isinstance(
+            self.bot.config.get("aliases"), dict
+        ):
+            aliases_map = self.bot.config["aliases"]
+        elif getattr(self.bot, "config", None) is not None and isinstance(
+            getattr(self.bot.config, "aliases", None), dict
+        ):
+            aliases_map = self.bot.config.aliases
+
+        if not aliases_map or cmd_name not in aliases_map:
+            return None
+
+        target = str(aliases_map[cmd_name]).strip()
+        if not target:
+            return None
+        if not any(target.startswith(p) for p in [prefix, "!", "?", ".", "-"]):
+            target = f"{prefix}{target}"
+        return f"{target} {arg_str}".strip() if arg_str else target
+
+    async def _get_bot_owner_member(self, guild: discord.Guild):
+        """Resolves a bot owner Member in the Modmail guild so Modmail's PermissionLevel checks pass."""
+        owner_ids = list(getattr(self.bot, "owner_ids", None) or [])
+        single_owner = getattr(self.bot, "owner_id", None)
+        if single_owner and single_owner not in owner_ids:
+            owner_ids.append(single_owner)
+
+        for oid in owner_ids:
+            m = guild.get_member(oid)
+            if m:
+                return m
+            try:
+                return await guild.fetch_member(oid)
+            except discord.HTTPException:
+                pass
+
+        if guild.owner:
+            return guild.owner
+        if getattr(guild, "owner_id", None):
+            try:
+                return await guild.fetch_member(guild.owner_id)
+            except discord.HTTPException:
+                pass
+        return guild.me
+
     async def run_in_thread(
         self,
         channel: discord.TextChannel,
@@ -286,7 +358,7 @@ class ModmailSupportPanel(commands.Cog):
         category_label: str,
         raw_alias: str,
     ):
-        """Runs a command, alias, or Modmail snippet inside the newly opened thread channel."""
+        """Runs a command, Modmail alias, or snippet inside the newly opened thread channel."""
         formatted = raw_alias.format(
             user=str(member.id),
             user_id=str(member.id),
@@ -311,9 +383,24 @@ class ModmailSupportPanel(commands.Cog):
         except ValueError:
             tokens = content.split()
 
-        cmd_name = tokens[0].lstrip("-!?.").lower() if tokens else ""
+        if not tokens:
+            return
 
-        me = channel.guild.me
+        cmd_name = tokens[0].lstrip("-!?.").lower()
+        arg_str = content[len(tokens[0]):].strip()
+
+        expanded = self._resolve_modmail_alias(cmd_name, arg_str, prefix)
+        if expanded:
+            content = expanded
+            try:
+                tokens = shlex.split(content)
+            except ValueError:
+                tokens = content.split()
+            cmd_name = tokens[0].lstrip("-!?.").lower()
+            arg_str = content[len(tokens[0]):].strip()
+
+        exec_member = await self._get_bot_owner_member(channel.guild)
+
         msg = discord.Message(
             state=self.bot._connection,
             channel=channel,
@@ -334,42 +421,44 @@ class ModmailSupportPanel(commands.Cog):
                 "tts": False,
                 "content": content,
                 "author": {
-                    "id": str(me.id),
-                    "username": me.name,
-                    "discriminator": me.discriminator,
-                    "avatar": me.avatar.key if me.avatar else None,
-                    "bot": True,
+                    "id": str(exec_member.id),
+                    "username": exec_member.name,
+                    "discriminator": exec_member.discriminator,
+                    "avatar": exec_member.avatar.key if exec_member.avatar else None,
+                    "bot": False,
                 },
                 "timestamp": discord.utils.utcnow().isoformat(),
             },
         )
-        ctx = await self.bot.get_context(msg)
-        ctx.author = me
+        msg.author = exec_member
 
-        if ctx.command:
-            arg_str = content[len(tokens[0]):].strip()
-            if arg_str:
-                ctx.view = StringView(arg_str)
-                await ctx.command.prepare(ctx)
-                await ctx.command.invoke(ctx)
-            else:
-                if ctx.command.cog:
-                    await ctx.command.callback(ctx.command.cog, ctx)
+        try:
+            ctx = await self.bot.get_context(msg)
+            ctx.author = exec_member
+
+            if ctx.command:
+                if arg_str:
+                    ctx.view = StringView(arg_str)
+                    await ctx.command.prepare(ctx)
+                    await ctx.command.invoke(ctx)
                 else:
-                    await ctx.command.callback(ctx)
-            return
+                    if ctx.command.cog:
+                        await ctx.command.callback(ctx.command.cog, ctx)
+                    else:
+                        await ctx.command.callback(ctx)
+                return
 
-        snippets_cog = self.bot.get_cog("Snippets")
-        if snippets_cog and cmd_name:
-            try:
+            snippets_cog = self.bot.get_cog("Snippets")
+            if snippets_cog and cmd_name:
                 snippet = await snippets_cog.get_snippet(cmd_name)
                 if snippet:
                     await snippets_cog.send_snippet(ctx, snippet)
                     return
-            except Exception as e:
-                print(f"[SupportPanel] Snippet error for '{cmd_name}': {e}")
 
-        await self.bot.process_commands(msg)
+            await self.bot.process_commands(msg)
+            self.bot.dispatch("message", msg)
+        except Exception as e:
+            print(f"[SupportPanel] Error running alias '{content}' in #{channel.name}: {e}")
 
     def _find_category_index(self, query: str) -> Optional[int]:
         q = query.strip().lower()
@@ -384,7 +473,7 @@ class ModmailSupportPanel(commands.Cog):
 
     # --- STEP-BY-STEP SETUP WIZARD ---
     @commands.command(name="supportsetup")
-    @commands.has_permissions(administrator=True)
+    @owner_only()
     async def support_setup(self, ctx: commands.Context):
         """Interactive step-by-step setup for the main-server support dropdown."""
         prefix = await self._get_prefix(ctx.channel)
@@ -405,7 +494,6 @@ class ModmailSupportPanel(commands.Cog):
                 return None
             return txt
 
-        # 1. Color
         c_ans = await ask(
             "🛠️ Support Setup (1/4) — Embed Color",
             "Send a **6-digit hex color** (e.g. `#5865F2`), or type **`default`**.\n*(Type `cancel` anytime to stop.)*",
@@ -414,7 +502,6 @@ class ModmailSupportPanel(commands.Cog):
             return
         color_val = DEFAULT_COLOR if c_ans.lower() == "default" else parse_color(c_ans)
 
-        # 2. Title & Description
         t_ans = await ask(
             "🛠️ Support Setup (2/4) — Panel Title",
             "Send the **panel title**, or type **`default`**.",
@@ -431,7 +518,6 @@ class ModmailSupportPanel(commands.Cog):
             return
         desc_val = self.config["description"] if d_ans.lower() == "default" else d_ans[:4000]
 
-        # 3. Categories loop (no defaults)
         categories = []
         while True:
             if len(categories) >= 25:
@@ -492,7 +578,6 @@ class ModmailSupportPanel(commands.Cog):
             })
             await ctx.send(f"✅ Added **{lbl}**.")
 
-        # 4. Post channel
         ch_ans = await ask(
             "🛠️ Support Setup (4/4) — Post Panel",
             "Mention the channel in this server to post the panel (e.g. `#support`), type `here`, or type `skip`.",
@@ -524,7 +609,7 @@ class ModmailSupportPanel(commands.Cog):
 
     # --- PANEL & EDIT COMMANDS ---
     @commands.command(name="supportpanel")
-    @commands.has_permissions(administrator=True)
+    @owner_only()
     async def support_panel(
         self, ctx: commands.Context, action: Optional[str] = None, channel: Optional[discord.TextChannel] = None
     ):
@@ -556,7 +641,7 @@ class ModmailSupportPanel(commands.Cog):
         await ctx.send(embed=embed)
 
     @commands.group(name="supportedit", invoke_without_command=True)
-    @commands.has_permissions(administrator=True)
+    @owner_only()
     async def support_edit(self, ctx: commands.Context):
         prefix = await self._get_prefix(ctx.channel)
         embed = discord.Embed(
@@ -575,28 +660,28 @@ class ModmailSupportPanel(commands.Cog):
         await ctx.send(embed=embed)
 
     @support_edit.command(name="color")
-    @commands.has_permissions(administrator=True)
+    @owner_only()
     async def edit_color(self, ctx: commands.Context, value: str):
         self.config["color"] = DEFAULT_COLOR if value.lower() == "default" else parse_color(value)
         save_config(self.config)
         await ctx.send(f"✅ Color updated to `#{self.get_color():06X}`.")
 
     @support_edit.command(name="title")
-    @commands.has_permissions(administrator=True)
+    @owner_only()
     async def edit_title(self, ctx: commands.Context, *, title: str):
         self.config["title"] = f"🎫 {ctx.guild.name} | Support" if title.lower() == "default" else title[:256]
         save_config(self.config)
         await ctx.send("✅ Title updated.")
 
     @support_edit.command(name="description")
-    @commands.has_permissions(administrator=True)
+    @owner_only()
     async def edit_description(self, ctx: commands.Context, *, desc: str):
         self.config["description"] = desc[:4000]
         save_config(self.config)
         await ctx.send("✅ Description updated.")
 
     @support_edit.command(name="alias")
-    @commands.has_permissions(administrator=True)
+    @owner_only()
     async def edit_alias(self, ctx: commands.Context, option: str, *, alias_cmd: str):
         idx = self._find_category_index(option)
         if idx is None:
@@ -608,7 +693,7 @@ class ModmailSupportPanel(commands.Cog):
         await ctx.send(f"✅ Updated alias for **{self.config['categories'][idx]['label']}**.")
 
     @support_edit.command(name="option")
-    @commands.has_permissions(administrator=True)
+    @owner_only()
     async def edit_option(self, ctx: commands.Context, option: str, field: str, *, value: str):
         idx = self._find_category_index(option)
         if idx is None:
@@ -633,7 +718,7 @@ class ModmailSupportPanel(commands.Cog):
         await ctx.send(f"✅ Updated `{f}` for **{cat['label']}**. Re-send panel to refresh the menu.")
 
     @support_edit.command(name="addoption")
-    @commands.has_permissions(administrator=True)
+    @owner_only()
     async def add_option(self, ctx: commands.Context, *, spec: str):
         if len(self.config.get("categories", [])) >= 25:
             return await ctx.send("❌ Max 25 options reached.")
@@ -652,7 +737,7 @@ class ModmailSupportPanel(commands.Cog):
         await ctx.send(f"✅ Added **{parts[0]}**. Re-send panel to refresh the menu.")
 
     @support_edit.command(name="removeoption")
-    @commands.has_permissions(administrator=True)
+    @owner_only()
     async def remove_option(self, ctx: commands.Context, *, option: str):
         idx = self._find_category_index(option)
         if idx is None:
