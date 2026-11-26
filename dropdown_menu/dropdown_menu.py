@@ -3,12 +3,10 @@ from contextlib import asynccontextmanager
 import json
 import os
 import re
-import shlex
 from typing import List, Optional
 
 import discord
 from discord.ext import commands
-from discord.ext.commands.view import StringView
 
 try:
     from core import checks
@@ -209,11 +207,13 @@ class ModmailCategorySelect(discord.ui.Select):
                 ephemeral=True,
             )
 
-        await asyncio.sleep(1.0)
+        # Wait 2 seconds after opening so the thread & initial embeds settle before running the alias
+        await asyncio.sleep(2.0)
 
         # 3. Auto-run configured alias / command / snippet in the thread channel
         if alias_cmd:
             await self.cog.run_in_thread(
+                interaction=interaction,
                 channel=thread.channel,
                 member=user,
                 category_label=label,
@@ -303,62 +303,15 @@ class ModmailSupportPanel(commands.Cog):
             pass
         return getattr(self.bot, "prefix", "-") or "-"
 
-    def _resolve_modmail_alias(self, cmd_name: str, arg_str: str, prefix: str) -> Optional[str]:
-        aliases_map = None
-        if isinstance(getattr(self.bot, "aliases", None), dict):
-            aliases_map = self.bot.aliases
-        elif isinstance(getattr(self.bot, "config", None), dict) and isinstance(
-            self.bot.config.get("aliases"), dict
-        ):
-            aliases_map = self.bot.config["aliases"]
-        elif getattr(self.bot, "config", None) is not None and isinstance(
-            getattr(self.bot.config, "aliases", None), dict
-        ):
-            aliases_map = self.bot.config.aliases
-
-        if not aliases_map or cmd_name not in aliases_map:
-            return None
-
-        target = str(aliases_map[cmd_name]).strip()
-        if not target:
-            return None
-        if not any(target.startswith(p) for p in [prefix, "!", "?", ".", "-"]):
-            target = f"{prefix}{target}"
-        return f"{target} {arg_str}".strip() if arg_str else target
-
-    async def _get_bot_owner_member(self, guild: discord.Guild):
-        """Resolves a bot owner Member in the Modmail guild so Modmail's PermissionLevel checks pass."""
-        owner_ids = list(getattr(self.bot, "owner_ids", None) or [])
-        single_owner = getattr(self.bot, "owner_id", None)
-        if single_owner and single_owner not in owner_ids:
-            owner_ids.append(single_owner)
-
-        for oid in owner_ids:
-            m = guild.get_member(oid)
-            if m:
-                return m
-            try:
-                return await guild.fetch_member(oid)
-            except discord.HTTPException:
-                pass
-
-        if guild.owner:
-            return guild.owner
-        if getattr(guild, "owner_id", None):
-            try:
-                return await guild.fetch_member(guild.owner_id)
-            except discord.HTTPException:
-                pass
-        return guild.me
-
     async def run_in_thread(
         self,
+        interaction: discord.Interaction,
         channel: discord.TextChannel,
         member,
         category_label: str,
         raw_alias: str,
     ):
-        """Runs a command, Modmail alias, or snippet inside the newly opened thread channel."""
+        """Runs an alias/command/snippet inside the newly opened thread using StickyPanel's pattern."""
         formatted = raw_alias.format(
             user=str(member.id),
             user_id=str(member.id),
@@ -374,91 +327,79 @@ class ModmailSupportPanel(commands.Cog):
             return
 
         prefix = await self._get_prefix(channel)
-        content = formatted
-        if not any(content.startswith(p) for p in [prefix, "!", "?", ".", "-"]):
-            content = f"{prefix}{content}"
+        clean_alias = formatted.lstrip("-")
+        if prefix and clean_alias.startswith(prefix):
+            clean_alias = clean_alias[len(prefix):].strip()
 
-        try:
-            tokens = shlex.split(content)
-        except ValueError:
-            tokens = content.split()
-
-        if not tokens:
+        alias_name = clean_alias.split()[0] if clean_alias else ""
+        command_text = f"{prefix}{clean_alias}" if clean_alias else ""
+        if not command_text:
             return
 
-        cmd_name = tokens[0].lstrip("-!?.").lower()
-        arg_str = content[len(tokens[0]):].strip()
-
-        expanded = self._resolve_modmail_alias(cmd_name, arg_str, prefix)
-        if expanded:
-            content = expanded
-            try:
-                tokens = shlex.split(content)
-            except ValueError:
-                tokens = content.split()
-            cmd_name = tokens[0].lstrip("-!?.").lower()
-            arg_str = content[len(tokens[0]):].strip()
-
-        exec_member = await self._get_bot_owner_member(channel.guild)
-
-        msg = discord.Message(
-            state=self.bot._connection,
-            channel=channel,
-            data={
-                "id": discord.utils.time_snowflake(discord.utils.utcnow()),
-                "webhook_id": None,
-                "attachments": [],
-                "embeds": [],
-                "application": None,
-                "activity": None,
-                "edited_timestamp": None,
-                "flags": 0,
-                "mention_everyone": False,
-                "mentions": [],
-                "mention_roles": [],
-                "type": discord.MessageType.default.value,
-                "pinned": False,
-                "tts": False,
-                "content": content,
-                "author": {
-                    "id": str(exec_member.id),
-                    "username": exec_member.name,
-                    "discriminator": exec_member.discriminator,
-                    "avatar": exec_member.avatar.key if exec_member.avatar else None,
-                    "bot": False,
-                },
-                "timestamp": discord.utils.utcnow().isoformat(),
-            },
-        )
-        msg.author = exec_member
-
         try:
-            ctx = await self.bot.get_context(msg)
-            ctx.author = exec_member
+            # Build a real Message in the target thread channel so get_context / process_commands resolves `channel`
+            anchor_msg = interaction.message
+            if anchor_msg is None:
+                async for m in channel.history(limit=1):
+                    anchor_msg = m
+                    break
 
-            if ctx.command:
-                if arg_str:
-                    ctx.view = StringView(arg_str)
-                    await ctx.command.prepare(ctx)
-                    await ctx.command.invoke(ctx)
-                else:
-                    if ctx.command.cog:
-                        await ctx.command.callback(ctx.command.cog, ctx)
-                    else:
-                        await ctx.command.callback(ctx)
+            if anchor_msg is not None:
+                alias_msg = anchor_msg
+                alias_msg.channel = channel
+                alias_msg.guild = channel.guild
+                alias_msg.content = command_text
+                alias_msg.author = interaction.user
+            else:
+                me = channel.guild.me
+                alias_msg = discord.Message(
+                    state=self.bot._connection,
+                    channel=channel,
+                    data={
+                        "id": discord.utils.time_snowflake(discord.utils.utcnow()),
+                        "webhook_id": None,
+                        "attachments": [],
+                        "embeds": [],
+                        "application": None,
+                        "activity": None,
+                        "edited_timestamp": None,
+                        "flags": 0,
+                        "mention_everyone": False,
+                        "mentions": [],
+                        "mention_roles": [],
+                        "type": discord.MessageType.default.value,
+                        "pinned": False,
+                        "tts": False,
+                        "content": command_text,
+                        "author": {
+                            "id": str(interaction.user.id),
+                            "username": interaction.user.name,
+                            "discriminator": interaction.user.discriminator,
+                            "avatar": interaction.user.avatar.key if interaction.user.avatar else None,
+                            "bot": bool(interaction.user.bot),
+                        },
+                        "timestamp": discord.utils.utcnow().isoformat(),
+                    },
+                )
+                alias_msg.author = interaction.user
+
+            ctx_alias = await self.bot.get_context(alias_msg)
+            ctx_alias.author = interaction.user
+
+            if ctx_alias.command:
+                await ctx_alias.command.invoke(ctx_alias)
                 return
 
             snippets_cog = self.bot.get_cog("Snippets")
-            if snippets_cog and cmd_name:
-                snippet = await snippets_cog.get_snippet(cmd_name)
+            if snippets_cog and alias_name:
+                snippet = await snippets_cog.get_snippet(alias_name)
                 if snippet:
-                    await snippets_cog.send_snippet(ctx, snippet)
+                    await snippets_cog.send_snippet(ctx_alias, snippet)
                     return
 
-            await self.bot.process_commands(msg)
-            self.bot.dispatch("message", msg)
+            await self.bot.process_commands(alias_msg)
         except Exception as e:
-            print(f"[SupportPanel] Error running alias '{content}' in #{channel.name}: {e}")
+            print(f"[SupportPanel] Error executing alias '{raw_alias}' in #{channel.name}: {e}")
 
     def _find_category_index(self, query: str) -> Optional[int]:
         q = query.strip().lower()
@@ -563,7 +504,7 @@ class ModmailSupportPanel(commands.Cog):
                 (
                     f"Enter the alias/command/snippet to auto-run in the opened thread, or `skip`.\n"
                     f"Placeholders: `{{user}}`, `{{user_id}}`, `{{user_name}}`, `{{channel}}`, `{{channel_id}}`, `{{category}}`\n"
-                    f"Example: `{prefix}myalias {{user}}`"
+                    f"Example: `myalias {{user}}`"
                 ),
             )
             if alias is None:
