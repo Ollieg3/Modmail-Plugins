@@ -11,6 +11,15 @@ from discord.ext.commands.view import StringView
 
 
 DEFAULT_CONFIG_PATH = "data/support_dropdown_config.json"
+DEFAULT_EMBED_COLOR = discord.Color.blurple()
+
+
+def parse_hex_color(value: str) -> Optional[discord.Color]:
+    """Parses a hex color string like '#5865F2' or '5865F2' into a discord.Color."""
+    cleaned = value.strip().lstrip("#")
+    if re.fullmatch(r"[0-9a-fA-F]{6}", cleaned):
+        return discord.Color(int(cleaned, 16))
+    return None
 
 
 class SupportCategorySelect(discord.ui.Select):
@@ -29,7 +38,6 @@ class SupportCategorySelect(discord.ui.Select):
                 )
             )
 
-        # Discord requires at least 1 option on a Select component if rendered
         if not options:
             options.append(
                 discord.SelectOption(
@@ -77,7 +85,7 @@ class SupportCategorySelect(discord.ui.Select):
                         f"Your **{cat_cfg['label']}** ticket has been opened in **{interaction.guild.name}**.\n"
                         "Please reply here or wait for a staff member to follow up."
                     ),
-                    color=discord.Color.blurple(),
+                    color=self.cog.get_embed_color(),
                 )
             )
         except discord.Forbidden:
@@ -194,10 +202,18 @@ class SupportDropdownCog(commands.Cog):
         self.support_role_id: Optional[int] = None
         self.panel_title: Optional[str] = None
         self.panel_description: Optional[str] = None
+        self.embed_color_hex: Optional[str] = None
         self.categories: Dict[str, dict] = {}
         self._load_config()
         self.view = SupportDropdownView(self)
         self.bot.add_view(self.view)
+
+    def get_embed_color(self) -> discord.Color:
+        if self.embed_color_hex:
+            parsed = parse_hex_color(self.embed_color_hex)
+            if parsed is not None:
+                return parsed
+        return DEFAULT_EMBED_COLOR
 
     def _load_config(self):
         if not os.path.exists(self.config_path):
@@ -209,6 +225,7 @@ class SupportDropdownCog(commands.Cog):
             self.support_role_id = data.get("support_role_id")
             self.panel_title = data.get("panel_title")
             self.panel_description = data.get("panel_description")
+            self.embed_color_hex = data.get("embed_color_hex")
             loaded_cats = data.get("categories")
             if isinstance(loaded_cats, dict):
                 self.categories = loaded_cats
@@ -222,6 +239,7 @@ class SupportDropdownCog(commands.Cog):
             "support_role_id": self.support_role_id,
             "panel_title": self.panel_title,
             "panel_description": self.panel_description,
+            "embed_color_hex": self.embed_color_hex,
             "categories": self.categories,
         }
         with open(self.config_path, "w", encoding="utf-8") as f:
@@ -232,12 +250,20 @@ class SupportDropdownCog(commands.Cog):
         self.view = SupportDropdownView(self)
         self.bot.add_view(self.view)
 
+    def _resolve_option_key(self, query: str) -> Optional[str]:
+        cleaned = query.strip().lower()
+        if cleaned in self.categories:
+            return cleaned
+        for key, data in self.categories.items():
+            if data.get("label", "").strip().lower() == cleaned:
+                return key
+        return None
+
     async def _get_bot_prefix(self, message_or_channel) -> str:
         prefixes = await self.bot.get_prefix(message_or_channel)
         if isinstance(prefixes, str):
             return prefixes
         if isinstance(prefixes, (list, tuple)) and prefixes:
-            # Prefer non-mention prefix if available
             for p in prefixes:
                 if not p.startswith("<@"):
                     return p
@@ -258,7 +284,7 @@ class SupportDropdownCog(commands.Cog):
         embed = discord.Embed(
             title=self.panel_title or default_title,
             description=self.panel_description or default_desc,
-            color=discord.Color.blurple(),
+            color=self.get_embed_color(),
         )
         embed.set_footer(text="Support System • Select a category below")
         return embed
@@ -380,6 +406,7 @@ class SupportDropdownCog(commands.Cog):
     async def interactive_setup(self, ctx: commands.Context):
         """Interactive step-by-step wizard to configure and post the support dropdown."""
         prefix = await self._get_bot_prefix(ctx.message)
+        wizard_color = self.get_embed_color()
 
         def check(m: discord.Message) -> bool:
             return m.author.id == ctx.author.id and m.channel.id == ctx.channel.id
@@ -401,13 +428,13 @@ class SupportDropdownCog(commands.Cog):
         # Step 1: Ticket Category
         step1 = await ask(
             discord.Embed(
-                title="🛠️ Support Dropdown Setup — Step 1/5: Ticket Category",
+                title="🛠️ Support Dropdown Setup — Step 1/6: Ticket Category",
                 description=(
                     "Where should new ticket channels be created?\n\n"
                     "Send the **Category ID** or **exact Category Name**, or type `skip` for none.\n"
                     "*(Type `cancel` at any time to abort.)*"
                 ),
-                color=discord.Color.blurple(),
+                color=wizard_color,
             )
         )
         if step1 is None:
@@ -434,12 +461,12 @@ class SupportDropdownCog(commands.Cog):
         # Step 2: Staff / Support Role
         step2 = await ask(
             discord.Embed(
-                title="🛠️ Support Dropdown Setup — Step 2/5: Support Role",
+                title="🛠️ Support Dropdown Setup — Step 2/6: Support Role",
                 description=(
                     "Which role should be able to view and reply in created tickets?\n\n"
                     "**Mention the role**, send its **Role ID** or **name**, or type `skip`."
                 ),
-                color=discord.Color.blurple(),
+                color=wizard_color,
             )
         )
         if step2 is None:
@@ -463,36 +490,63 @@ class SupportDropdownCog(commands.Cog):
             else:
                 await ctx.send("⚠️ Couldn't find that role—skipping role permissions.")
 
-        # Step 3: Panel Title & Description
-        step3 = await ask(
+        # Step 3: Embed Color (Manual hex or default)
+        step3_color = await ask(
             discord.Embed(
-                title="🛠️ Support Dropdown Setup — Step 3/5: Panel Embed",
+                title="🛠️ Support Dropdown Setup — Step 3/6: Embed Color",
+                description=(
+                    "Send a **6-digit hex color** for the embeds (e.g. `#F1C40F` or `#2B2D31`), "
+                    "or type **`default`** to use the default blurple color."
+                ),
+                color=wizard_color,
+            )
+        )
+        if step3_color is None:
+            return
+
+        embed_color_hex: Optional[str] = None
+        if step3_color.lower() != "default":
+            parsed = parse_hex_color(step3_color)
+            if parsed is not None:
+                embed_color_hex = f"#{step3_color.strip().lstrip('#').upper()}"
+                wizard_color = parsed
+                await ctx.send(f"✅ Embed color set to `{embed_color_hex}`.")
+            else:
+                await ctx.send("⚠️ Invalid hex code—using the `default` color instead.")
+        else:
+            wizard_color = DEFAULT_EMBED_COLOR
+            await ctx.send("✅ Using `default` embed color.")
+
+        # Step 4: Panel Title & Description
+        step4 = await ask(
+            discord.Embed(
+                title="🛠️ Support Dropdown Setup — Step 4/6: Panel Embed",
                 description=(
                     "Send the **embed title** for your support panel, or type `default` to use the standard layout."
                 ),
-                color=discord.Color.blurple(),
+                color=wizard_color,
             )
         )
-        if step3 is None:
+        if step4 is None:
             return
 
         panel_title: Optional[str] = None
         panel_description: Optional[str] = None
-        if step3.lower() != "default":
-            panel_title = step3[:256]
-            step3_desc = await ask(
+        if step4.lower() != "default":
+            panel_title = step4[:256]
+            step4_desc = await ask(
                 discord.Embed(
-                    title="🛠️ Support Dropdown Setup — Step 3b/5: Panel Description",
+                    title="🛠️ Support Dropdown Setup — Step 4b/6: Panel Description",
                     description="Now send the **embed description** (or type `default` for the default text).",
-                    color=discord.Color.blurple(),
+                    color=wizard_color,
                 )
             )
-            if step3_desc is None:
+            if step4_desc is None:
                 return
-            if step3_desc.lower() != "default":
-                panel_description = step3_desc[:4000]
+            if step4_desc.lower() != "default":
+                panel_description = step4_desc[:4000]
 
-        # Step 4: Loop to build Dropdown Categories
+        # Step 5: Loop to build Dropdown Categories
         new_categories: Dict[str, dict] = {}
         while True:
             count = len(new_categories)
@@ -502,16 +556,16 @@ class SupportDropdownCog(commands.Cog):
 
             prompt_text = (
                 f"Currently added: **{count}** option(s).\n\n"
-                "Send the **name/label** for the next dropdown option (e.g. `General`, `Staffing`, `Development`, `Partnerships`)."
+                "Send the **name/label** for the next dropdown option (e.g. `General Support`, `Staffing Support`, `Development Support`, `Partnership Support`)."
             )
             if count > 0:
                 prompt_text += "\nOr type **`done`** when you've finished adding options."
 
             opt_label = await ask(
                 discord.Embed(
-                    title=f"🛠️ Support Dropdown Setup — Step 4/5: Dropdown Option #{count + 1}",
+                    title=f"🛠️ Support Dropdown Setup — Step 5/6: Dropdown Option #{count + 1}",
                     description=prompt_text,
-                    color=discord.Color.blurple(),
+                    color=wizard_color,
                 )
             )
             if opt_label is None:
@@ -527,7 +581,7 @@ class SupportDropdownCog(commands.Cog):
                 discord.Embed(
                     title=f"Option '{opt_label}' — Description",
                     description="Enter a short description shown under this option in the menu (or `skip`).",
-                    color=discord.Color.blurple(),
+                    color=wizard_color,
                 )
             )
             if opt_desc is None:
@@ -538,7 +592,7 @@ class SupportDropdownCog(commands.Cog):
                 discord.Embed(
                     title=f"Option '{opt_label}' — Emoji",
                     description="Send an **emoji** for this option (standard or custom server emoji), or type `skip`.",
-                    color=discord.Color.blurple(),
+                    color=wizard_color,
                 )
             )
             if opt_emoji is None:
@@ -554,7 +608,7 @@ class SupportDropdownCog(commands.Cog):
                         "• Available placeholders: `{user}`, `{user_id}`, `{user_name}`, `{channel}`, `{channel_id}`, `{category}`\n"
                         f"• Example: `{prefix}myalias {{user}}`"
                     ),
-                    color=discord.Color.blurple(),
+                    color=wizard_color,
                 )
             )
             if opt_alias is None:
@@ -568,25 +622,26 @@ class SupportDropdownCog(commands.Cog):
                 "emoji": emoji_val,
                 "alias": alias_val,
             }
-            await ctx.send(f"✅ Added option **{opt_label}**.")
+            await ctx.send(f"✅ Added option **{opt_label}** (`{key}`).")
 
-        # Step 5: Target Channel to post the dropdown panel
-        step5 = await ask(
+        # Step 6: Target Channel to post the dropdown panel
+        step6 = await ask(
             discord.Embed(
-                title="🛠️ Support Dropdown Setup — Step 5/5: Post Panel",
+                title="🛠️ Support Dropdown Setup — Step 6/6: Post Panel",
                 description=(
                     "Where should I send the support dropdown panel?\n\n"
                     "**Mention the channel** (e.g. `#support`), send its **Channel ID**, type `here`, or type `skip` to save without posting yet."
                 ),
-                color=discord.Color.blurple(),
+                color=wizard_color,
             )
         )
-        if step5 is None:
+        if step6 is None:
             return
 
         # Save everything & rebuild persistent view
         self.ticket_category_id = ticket_category_id
         self.support_role_id = support_role_id
+        self.embed_color_hex = embed_color_hex
         self.panel_title = panel_title
         self.panel_description = panel_description
         self.categories = new_categories
@@ -594,12 +649,12 @@ class SupportDropdownCog(commands.Cog):
         self._rebuild_view()
 
         target_channel: Optional[discord.TextChannel] = None
-        if step5.lower() == "here":
+        if step6.lower() == "here":
             if isinstance(ctx.channel, discord.TextChannel):
                 target_channel = ctx.channel
-        elif step5.lower() != "skip":
-            ch_match = re.match(r"^<#(\d+)>$", step5)
-            ch_id = int(ch_match.group(1)) if ch_match else (int(step5) if step5.isdigit() else None)
+        elif step6.lower() != "skip":
+            ch_match = re.match(r"^<#(\d+)>$", step6)
+            ch_id = int(ch_match.group(1)) if ch_match else (int(step6) if step6.isdigit() else None)
             if ch_id:
                 ch_obj = ctx.guild.get_channel(ch_id)
                 if isinstance(ch_obj, discord.TextChannel):
@@ -612,6 +667,222 @@ class SupportDropdownCog(commands.Cog):
             await ctx.send(
                 f"🎉 Setup saved! Whenever you're ready to post it, run `{prefix}supportpanel send #channel`."
             )
+
+    @commands.group(name="supportedit", invoke_without_command=True)
+    @commands.has_permissions(administrator=True)
+    async def supportedit_cmd(self, ctx: commands.Context):
+        """Show quick edit commands for the support dropdown configuration."""
+        prefix = await self._get_bot_prefix(ctx.message)
+        embed = discord.Embed(
+            title="✏️ Support Dropdown Edit Commands",
+            color=self.get_embed_color(),
+            description=(
+                f"`{prefix}supportedit color <#hex|default>` — Change embed color\n"
+                f"`{prefix}supportedit category <#category|id|none>` — Change ticket category\n"
+                f"`{prefix}supportedit role <@role|id|none>` — Change support role\n"
+                f"`{prefix}supportedit title <text|default>` — Change panel title\n"
+                f"`{prefix}supportedit description <text|default>` — Change panel description\n"
+                f"`{prefix}supportedit alias <option> <command|clear>` — Change or clear an option's alias\n"
+                f"`{prefix}supportedit option <option> <label|desc|emoji> <value|clear>` — Edit an option\n"
+                f"`{prefix}supportedit addoption <label> | <description> | [emoji] | [alias]` — Add a new option\n"
+                f"`{prefix}supportedit removeoption <option>` — Remove an option"
+            ),
+        )
+        await ctx.send(embed=embed)
+
+    @supportedit_cmd.command(name="color")
+    @commands.has_permissions(administrator=True)
+    async def edit_color(self, ctx: commands.Context, color_value: str):
+        if color_value.lower() == "default":
+            self.embed_color_hex = None
+            self._save_config()
+            await ctx.send("✅ Embed color reset to `default`.")
+            return
+
+        parsed = parse_hex_color(color_value)
+        if parsed is None:
+            await ctx.send("❌ Invalid hex color. Use a 6-digit hex like `#F1C40F` or type `default`.")
+            return
+
+        self.embed_color_hex = f"#{color_value.strip().lstrip('#').upper()}"
+        self._save_config()
+        await ctx.send(f"✅ Embed color updated to `{self.embed_color_hex}`.")
+
+    @supportedit_cmd.command(name="category")
+    @commands.has_permissions(administrator=True)
+    async def edit_category(self, ctx: commands.Context, *, target: str):
+        if target.strip().lower() in ("none", "clear", "skip"):
+            self.ticket_category_id = None
+            self._save_config()
+            await ctx.send("✅ Ticket category cleared.")
+            return
+
+        cat_obj = None
+        if target.strip().isdigit():
+            ch = ctx.guild.get_channel(int(target.strip()))
+            if isinstance(ch, discord.CategoryChannel):
+                cat_obj = ch
+        if not cat_obj:
+            cat_obj = discord.utils.find(
+                lambda c: isinstance(c, discord.CategoryChannel) and c.name.lower() == target.strip().lower(),
+                ctx.guild.channels,
+            )
+
+        if not cat_obj:
+            await ctx.send("❌ Category not found. Send a valid Category ID, exact name, or `none`.")
+            return
+
+        self.ticket_category_id = cat_obj.id
+        self._save_config()
+        await ctx.send(f"✅ Ticket category updated to **{cat_obj.name}** (`{cat_obj.id}`).")
+
+    @supportedit_cmd.command(name="role")
+    @commands.has_permissions(administrator=True)
+    async def edit_role(self, ctx: commands.Context, *, target: str):
+        if target.strip().lower() in ("none", "clear", "skip"):
+            self.support_role_id = None
+            self._save_config()
+            await ctx.send("✅ Support role cleared.")
+            return
+
+        role_obj = None
+        mention_match = re.match(r"^<@&(\d+)>$", target.strip())
+        if mention_match:
+            role_obj = ctx.guild.get_role(int(mention_match.group(1)))
+        elif target.strip().isdigit():
+            role_obj = ctx.guild.get_role(int(target.strip()))
+        if not role_obj:
+            role_obj = discord.utils.find(
+                lambda r: r.name.lower() == target.strip().lower(), ctx.guild.roles
+            )
+
+        if not role_obj:
+            await ctx.send("❌ Role not found. Mention the role, send its ID/name, or type `none`.")
+            return
+
+        self.support_role_id = role_obj.id
+        self._save_config()
+        await ctx.send(f"✅ Support role updated to {role_obj.mention} (`{role_obj.id}`).")
+
+    @supportedit_cmd.command(name="title")
+    @commands.has_permissions(administrator=True)
+    async def edit_title(self, ctx: commands.Context, *, title: str):
+        if title.strip().lower() == "default":
+            self.panel_title = None
+            self._save_config()
+            await ctx.send("✅ Panel title reset to `default`.")
+            return
+
+        self.panel_title = title.strip()[:256]
+        self._save_config()
+        await ctx.send(f"✅ Panel title updated to **{self.panel_title}**.")
+
+    @supportedit_cmd.command(name="description")
+    @commands.has_permissions(administrator=True)
+    async def edit_description(self, ctx: commands.Context, *, description: str):
+        if description.strip().lower() == "default":
+            self.panel_description = None
+            self._save_config()
+            await ctx.send("✅ Panel description reset to `default`.")
+            return
+
+        self.panel_description = description.strip()[:4000]
+        self._save_config()
+        await ctx.send("✅ Panel description updated.")
+
+    @supportedit_cmd.command(name="alias")
+    @commands.has_permissions(administrator=True)
+    async def edit_alias(self, ctx: commands.Context, option: str, *, alias_command: str):
+        key = self._resolve_option_key(option)
+        if not key:
+            await ctx.send(f"❌ Option `{option}` not found.")
+            return
+
+        if alias_command.strip().lower() in ("clear", "none"):
+            self.categories[key]["alias"] = ""
+            self._save_config()
+            await ctx.send(f"🗑️ Cleared alias for **{self.categories[key]['label']}**.")
+            return
+
+        self.categories[key]["alias"] = alias_command.strip()
+        self._save_config()
+        await ctx.send(
+            f"✅ Alias for **{self.categories[key]['label']}** (`{key}`) updated to:\n`{alias_command.strip()}`"
+        )
+
+    @supportedit_cmd.command(name="option")
+    @commands.has_permissions(administrator=True)
+    async def edit_option_field(
+        self, ctx: commands.Context, option: str, field: str, *, value: str
+    ):
+        key = self._resolve_option_key(option)
+        if not key:
+            await ctx.send(f"❌ Option `{option}` not found.")
+            return
+
+        field_clean = field.strip().lower()
+        val_clean = value.strip()
+
+        if field_clean in ("label", "name"):
+            self.categories[key]["label"] = val_clean[:100]
+        elif field_clean in ("desc", "description"):
+            self.categories[key]["description"] = (
+                "Open a support ticket." if val_clean.lower() == "clear" else val_clean[:100]
+            )
+        elif field_clean == "emoji":
+            self.categories[key]["emoji"] = None if val_clean.lower() in ("clear", "none") else val_clean
+        else:
+            await ctx.send("❌ Field must be `label`, `desc` (or `description`), or `emoji`.")
+            return
+
+        self._save_config()
+        self._rebuild_view()
+        await ctx.send(
+            f"✅ Updated `{field_clean}` for **{self.categories[key]['label']}** (`{key}`). Re-send the panel if you want the message updated."
+        )
+
+    @supportedit_cmd.command(name="addoption")
+    @commands.has_permissions(administrator=True)
+    async def add_option(self, ctx: commands.Context, *, spec: str):
+        if len(self.categories) >= 25:
+            await ctx.send("❌ Maximum of 25 dropdown options reached.")
+            return
+
+        parts = [p.strip() for p in spec.split("|")]
+        if not parts[0]:
+            await ctx.send(
+                "❌ Provide at least an option label, e.g.:\n`!supportedit addoption Billing Support | Help with invoices | 💳 | billingalias {user}`"
+            )
+            return
+
+        label = parts[0][:100]
+        description = parts[1][:100] if len(parts) > 1 and parts[1] else "Open a support ticket."
+        emoji = parts[2] if len(parts) > 2 and parts[2] and parts[2].lower() != "none" else None
+        alias = parts[3] if len(parts) > 3 and parts[3] and parts[3].lower() != "none" else ""
+
+        key = self._slugify(label, self.categories)
+        self.categories[key] = {
+            "label": label,
+            "description": description,
+            "emoji": emoji,
+            "alias": alias,
+        }
+        self._save_config()
+        self._rebuild_view()
+        await ctx.send(f"✅ Added option **{label}** (`{key}`). Re-send the panel to show the updated menu.")
+
+    @supportedit_cmd.command(name="removeoption")
+    @commands.has_permissions(administrator=True)
+    async def remove_option(self, ctx: commands.Context, *, option: str):
+        key = self._resolve_option_key(option)
+        if not key:
+            await ctx.send(f"❌ Option `{option}` not found.")
+            return
+
+        removed = self.categories.pop(key)
+        self._save_config()
+        self._rebuild_view()
+        await ctx.send(f"🗑️ Removed option **{removed['label']}** (`{key}`).")
 
     @commands.command(name="supportpanel")
     @commands.has_permissions(administrator=True)
@@ -630,19 +901,21 @@ class SupportDropdownCog(commands.Cog):
                 await ctx.send(f"✅ Support dropdown panel sent to {target.mention}.")
             return
 
+        color_label = self.embed_color_hex or "default"
         lines = [
-            f"• {item['emoji'] + ' ' if item.get('emoji') else ''}**{item['label']}** → Alias: `{item['alias']}`"
+            f"• {item['emoji'] + ' ' if item.get('emoji') else ''}**{item['label']}** (`{key}`) → Alias: `{item['alias']}`"
             if item.get("alias")
-            else f"• {item['emoji'] + ' ' if item.get('emoji') else ''}**{item['label']}** → Alias: *None*"
-            for item in self.categories.values()
+            else f"• {item['emoji'] + ' ' if item.get('emoji') else ''}**{item['label']}** (`{key}`) → Alias: *None*"
+            for key, item in self.categories.items()
         ]
         embed = discord.Embed(
             title="🎛️ Support Dropdown Config",
             description=(
-                ("\n".join(lines) if lines else "*No categories configured yet.*")
-                + f"\n\nRun `{prefix}supportsetup` to configure everything step-by-step, or `{prefix}supportpanel send #channel` to post."
+                f"**Embed Color:** `{color_label}`\n\n"
+                + ("\n".join(lines) if lines else "*No categories configured yet.*")
+                + f"\n\nRun `{prefix}supportsetup` for the wizard, `{prefix}supportedit` to edit, or `{prefix}supportpanel send #channel` to post."
             ),
-            color=discord.Color.blurple(),
+            color=self.get_embed_color(),
         )
         await ctx.send(embed=embed)
 
